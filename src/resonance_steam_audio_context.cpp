@@ -1,5 +1,6 @@
 #include "resonance_steam_audio_context.h"
 #include "resonance_constants.h"
+#include "resonance_hrtf_rate_policy.h"
 #include "resonance_log.h"
 #include <climits>
 #include <godot_cpp/classes/project_settings.hpp>
@@ -96,13 +97,27 @@ bool ResonanceSteamAudioContext::init(ResonanceSteamAudioContextConfig& config) 
         hrtfSettings.volume = ResonanceSOFAAsset::db_to_gain(config.hrtf_volume_db);
         hrtfSettings.normType = (config.hrtf_normalization_type == 1) ? IPL_HRTFNORMTYPE_RMS : IPL_HRTFNORMTYPE_NONE;
     }
+    if (hrtfSettings.type == IPL_HRTFTYPE_DEFAULT &&
+        !resonance::default_hrtf_supports_sample_rate(config.sample_rate)) {
+        UtilityFunctions::push_error(
+            "Nexus Resonance: Default HRTF does not support sample rate " + String::num_int64(config.sample_rate) +
+            " Hz. Supported rates are 24000, 44100, and 48000 Hz. Set the host mix rate to one of these rates, or assign a SOFA asset (Phonon resamples SOFA to the mix rate).");
+        return false;
+    }
     IPLHRTF new_hrtf = nullptr;
-    if (iplHRTFCreate(context_, &audioSettings, &hrtfSettings, &new_hrtf) == IPL_STATUS_SUCCESS && new_hrtf) {
+    const IPLerror hrtf_status = iplHRTFCreate(context_, &audioSettings, &hrtfSettings, &new_hrtf);
+    if (hrtf_status == IPL_STATUS_SUCCESS && new_hrtf) {
         hrtf_[1] = iplHRTFRetain(new_hrtf);
         iplHRTFRelease(&new_hrtf);
         new_hrtf_written_.store(true, std::memory_order_release);
+    } else if (hrtfSettings.type == IPL_HRTFTYPE_SOFA) {
+        UtilityFunctions::push_error(
+            "Nexus Resonance: HRTF Init Failed (status=" + String::num_int64(static_cast<int64_t>(hrtf_status)) +
+            "). SOFA files must use SimpleFreeFieldHRIR convention; check Steam Audio documentation.");
+        return false;
     } else {
-        UtilityFunctions::push_error("Nexus Resonance: HRTF Init Failed. SOFA files must use SimpleFreeFieldHRIR convention; check Steam Audio documentation.");
+        UtilityFunctions::push_error(
+            "Nexus Resonance: HRTF Init Failed (status=" + String::num_int64(static_cast<int64_t>(hrtf_status)) + ").");
         return false;
     }
 
