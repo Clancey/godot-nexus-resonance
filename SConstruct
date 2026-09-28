@@ -104,6 +104,15 @@ if env["platform"] == "ios":
         target=target_path + "lib" + target_name,
         source=sources,
     )
+elif env["platform"] == "android":
+    # Android only packages and loads libraries named lib*.so. SCons adds the
+    # prefix on a Linux host but not when cross-compiling from Windows.
+    library = env.SharedLibrary(
+        target=target_path + "lib" + target_name,
+        source=sources,
+        SHLIBPREFIX="",
+        SHLIBSUFFIX=".so",
+    )
 else:
     library = env.SharedLibrary(
         target=target_path + target_name,
