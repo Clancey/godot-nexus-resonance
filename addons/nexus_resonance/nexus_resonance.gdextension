@@ -34,6 +34,10 @@ android.x86_64 = "res://addons/nexus_resonance/bin/android/x86_64/libnexus_reson
 ios.debug.arm64 = "res://addons/nexus_resonance/bin/ios/libnexus_resonance.a"
 ios.release.arm64 = "res://addons/nexus_resonance/bin/ios/libnexus_resonance.a"
 
+; visionOS (arm64, static libraries like iOS)
+visionos.debug.arm64 = "res://addons/nexus_resonance/bin/visionos/libnexus_resonance.visionos.template_debug.arm64.a"
+visionos.release.arm64 = "res://addons/nexus_resonance/bin/visionos/libnexus_resonance.visionos.template_release.arm64.a"
+
 [dependencies]
 
 windows.debug.x86_64 = {
@@ -87,6 +91,18 @@ ios.release.arm64 = {
     "res://addons/nexus_resonance/bin/ios/libgodot-cpp.ios.template_release.arm64.a": "",
     "res://addons/nexus_resonance/bin/ios/libpffft.a": "",
     "res://addons/nexus_resonance/bin/ios/libmysofa.a": ""
+}
+visionos.debug.arm64 = {
+    "res://addons/nexus_resonance/bin/visionos/libphonon.a": "",
+    "res://addons/nexus_resonance/bin/visionos/libgodot-cpp.visionos.template_debug.arm64.a": "",
+    "res://addons/nexus_resonance/bin/visionos/libpffft.a": "",
+    "res://addons/nexus_resonance/bin/visionos/libmysofa.a": ""
+}
+visionos.release.arm64 = {
+    "res://addons/nexus_resonance/bin/visionos/libphonon.a": "",
+    "res://addons/nexus_resonance/bin/visionos/libgodot-cpp.visionos.template_release.arm64.a": "",
+    "res://addons/nexus_resonance/bin/visionos/libpffft.a": "",
+    "res://addons/nexus_resonance/bin/visionos/libmysofa.a": ""
 }
 
 [icons]

@@ -3,6 +3,12 @@ import os
 import shutil
 import sys
 
+# godot-cpp has no visionOS platform tool, so ours (tools/visionos.py) is loaded through
+# its custom_tools option. Only set for visionOS so other platforms are unaffected.
+if ARGUMENTS.get("platform", "") == "visionos":
+    ARGUMENTS.setdefault("custom_tools", "tools")
+    ARGUMENTS.setdefault("arch", "arm64")
+
 env = SConscript("src/lib/godot-cpp/SConstruct")
 
 # Project setup
@@ -61,6 +67,12 @@ elif env["platform"] == "ios":
     env.Append(LIBPATH=[os.path.join(steam_audio_lib, "ios")])
     env.Append(LIBS=["phonon"])
 
+elif env["platform"] == "visionos":
+    # Valve ships no visionOS binaries; libphonon.a is built from source (see Makefile visionos-deps).
+    # Nothing is linked here because the extension is a static library on visionOS.
+    env.Append(LIBPATH=[os.path.join(steam_audio_lib, "visionos")])
+    env.Append(LIBS=["phonon"])
+
 # TARGET PATH (addon source of truth under repo root)
 target_base = "addons/nexus_resonance/bin/"
 target_name = "nexus_resonance"
@@ -72,6 +84,8 @@ if env["platform"] == "android":
     target_path = os.path.join(target_base, "android", abi_dir, "")
 elif env["platform"] == "ios":
     target_path = os.path.join(target_base, "ios", "")
+elif env["platform"] == "visionos":
+    target_path = os.path.join(target_base, "visionos_simulator" if env["visionos_simulator"] else "visionos", "")
 elif env["platform"] == "macos":
     target_path = os.path.join(target_base, "macos", "")
 elif env["platform"] == "windows":
@@ -102,6 +116,14 @@ if _target in ["editor", "template_debug", "template_release"]:
 if env["platform"] == "ios":
     library = env.StaticLibrary(
         target=target_path + "lib" + target_name,
+        source=sources,
+    )
+elif env["platform"] == "visionos":
+    # Static library like iOS, but named per target (for example
+    # libnexus_resonance.visionos.template_release.arm64.a) so that the debug and release
+    # builds do not overwrite each other and each is paired with the matching godot-cpp library.
+    library = env.StaticLibrary(
+        target=target_path + "lib" + target_name + env["suffix"] + env["LIBSUFFIX"],
         source=sources,
     )
 elif env["platform"] == "android":
@@ -148,7 +170,8 @@ if env["platform"] == "windows":
     env.AddPostAction(library, env.Action(copy_steam_dlls))
 
 # --- C++ UNIT TESTS (no Godot / no link to phonon; Steam Audio headers only for IPL types in ray tests) ---
-build_tests = ARGUMENTS.get("build_tests", "1") == "1"
+# The unit tests are a host executable, which cannot be linked or run for visionOS.
+build_tests = ARGUMENTS.get("build_tests", "1") == "1" and env["platform"] != "visionos"
 test_exe = None
 if build_tests:
     env_test = env.Clone()

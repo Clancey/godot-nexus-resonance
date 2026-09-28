@@ -172,6 +172,7 @@ make build-linux      # Linux x64
 make build-macos      # macOS (universal)
 make build-android    # Android arm64 + x86_64
 make build-ios        # iOS arm64 (macOS only; builds pffft/libmysofa deps)
+make build-visionos   # visionOS arm64 (macOS only; builds Steam Audio from source, needs STEAM_AUDIO_SRC=<steam-audio checkout with visionOS support> and CMake 3.28+)
 ```
 
 Output: `addons/nexus_resonance/bin/`
