@@ -4,6 +4,7 @@ on:
   push:
     tags:
       - 'v*'
+      - 'fs-*'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -235,9 +236,147 @@ jobs:
           name: bin-macos-ios
           path: addons/nexus_resonance/bin/
 
+  build-linux-arm64:
+    name: Build (Linux arm64)
+    runs-on: ubuntu-22.04
+    env:
+      SYSROOT: ${{ github.workspace }}/sysroot-bullseye-arm64
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      # Valve ships no Linux arm64 library, so Steam Audio is built from the fork.
+      - uses: actions/checkout@v5
+        with:
+          repository: ${{ github.repository_owner }}/steam-audio
+          ref: fingerslingers
+          path: steam-audio
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang lld cmake binutils-aarch64-linux-gnu gcc-aarch64-linux-gnu g++-aarch64-linux-gnu unzip file
+          python3 -m pip install scons
+          scons --version
+
+      - name: Cache Steam Audio SDK
+        uses: actions/cache@v5
+        with:
+          path: src/lib/steamaudio
+          key: steamaudio-${{ hashFiles('scripts/install_steam_audio.py') }}
+
+      - name: Install Steam Audio SDK (headers)
+        run: bash .github/scripts/install_steam_audio_ci.sh
+
+      # Debian 11 sysroot: glibc 2.31, the same as the Steam Linux Runtime 3.0.
+      - name: Create sysroot
+        run: python3 scripts/make_linux_arm64_sysroot.py "$SYSROOT"
+
+      - name: Build Steam Audio
+        env:
+          STEAMAUDIO_LINUX_ARM64_CC: clang
+          STEAMAUDIO_LINUX_ARM64_CXX: clang++
+          STEAMAUDIO_LINUX_ARM64_SYSROOT: ${{ env.SYSROOT }}
+        run: |
+          cd steam-audio/core/build
+          python3 get_dependencies.py --toolsonly
+          python3 get_dependencies.py -p linux -a arm64 --libsonly
+          cd ..
+          cmake -G "Unix Makefiles" -S . -B build/linux-arm64-release \
+            -DCMAKE_TOOLCHAIN_FILE=$PWD/build/toolchain_linux_arm64.cmake \
+            -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON \
+            -DSTEAMAUDIO_BUILD_TESTS=OFF -DSTEAMAUDIO_BUILD_BENCHMARKS=OFF -DSTEAMAUDIO_BUILD_SAMPLES=OFF \
+            -DSTEAMAUDIO_BUILD_ITESTS=OFF -DSTEAMAUDIO_BUILD_DOCS=OFF \
+            -DSTEAMAUDIO_ENABLE_IPP=OFF -DSTEAMAUDIO_ENABLE_MKL=OFF -DSTEAMAUDIO_ENABLE_EMBREE=OFF \
+            -DSTEAMAUDIO_ENABLE_RADEONRAYS=OFF -DSTEAMAUDIO_ENABLE_TRUEAUDIONEXT=OFF -DSTEAMAUDIO_ENABLE_AVX=OFF \
+            -DCMAKE_SHARED_LINKER_FLAGS="-fuse-ld=lld -static-libstdc++ -static-libgcc"
+          cmake --build build/linux-arm64-release --target phonon -j$(nproc)
+
+      - name: Build extension
+        env:
+          LINUX_ARM64_SYSROOT: ${{ env.SYSROOT }}
+        run: |
+          BIN=addons/nexus_resonance/bin/linux-arm64
+          mkdir -p src/lib/steamaudio/lib/linux-arm64 "$BIN"
+          aarch64-linux-gnu-strip --strip-unneeded -o src/lib/steamaudio/lib/linux-arm64/libphonon.so \
+            steam-audio/core/build/linux-arm64-release/src/core/libphonon.so
+          cp src/lib/steamaudio/lib/linux-arm64/libphonon.so "$BIN/"
+          scons platform=linux arch=arm64 use_llvm=yes use_static_cpp=yes target=template_release build_tests=0 debug_symbols=no -j$(nproc)
+          aarch64-linux-gnu-strip --strip-unneeded "$BIN/libnexus_resonance.so"
+
+      - name: Verify
+        run: |
+          BIN=addons/nexus_resonance/bin/linux-arm64
+          file "$BIN"/*.so
+          file "$BIN/libnexus_resonance.so" | grep -q "ARM aarch64"
+          file "$BIN/libphonon.so" | grep -q "ARM aarch64"
+          MAX=$(aarch64-linux-gnu-objdump -T "$BIN"/*.so | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1)
+          echo "highest glibc symbol version required: $MAX"
+          python3 -c "import sys; v=tuple(int(x) for x in '$MAX'.split('_')[1].split('.')); sys.exit(0 if v <= (2,31) else 1)"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v5
+        with:
+          name: bin-linux-arm64
+          path: addons/nexus_resonance/bin/
+
+  build-visionos:
+    name: Build (visionOS)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      # Valve ships no visionOS library, so Steam Audio is built from the fork.
+      - uses: actions/checkout@v5
+        with:
+          repository: ${{ github.repository_owner }}/steam-audio
+          ref: fingerslingers
+          path: steam-audio
+
+      - name: Install dependencies
+        run: |
+          PIP_BREAK_SYSTEM_PACKAGES=1 python3 -m pip install scons cmake
+          scons --version
+          cmake --version
+          xcodebuild -version
+          xcrun --sdk xros --show-sdk-path
+
+      - name: Cache Steam Audio SDK
+        uses: actions/cache@v5
+        with:
+          path: src/lib/steamaudio
+          key: steamaudio-${{ hashFiles('scripts/install_steam_audio.py') }}
+
+      - name: Install Steam Audio SDK (headers)
+        run: bash .github/scripts/install_steam_audio_ci.sh
+
+      - name: Build
+        run: make build-visionos STEAM_AUDIO_SRC=steam-audio
+
+      - name: Verify
+        run: |
+          BIN=addons/nexus_resonance/bin/visionos
+          ls -la "$BIN"
+          for f in "$BIN"/*.a; do
+            lipo -info "$f" | grep -q arm64
+            otool -l "$f" | grep -m1 "platform 11"
+          done
+          nm -g "$BIN"/libnexus_resonance.visionos.template_release.arm64.a | grep -q nexus_resonance_library_init
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v5
+        with:
+          name: bin-visionos
+          path: addons/nexus_resonance/bin/
+
   create-release:
     name: Create Release
-    needs: [build-linux-android, build-windows, build-macos-ios]
+    needs: [build-linux-android, build-linux-arm64, build-windows, build-macos-ios, build-visionos]
     runs-on: ubuntu-22.04
     steps:
       - name: Checkout
@@ -258,6 +397,8 @@ jobs:
           cp -r artifacts/bin-linux-android/* release_addon/addons/nexus_resonance/bin/
           cp -r artifacts/bin-windows/* release_addon/addons/nexus_resonance/bin/
           cp -r artifacts/bin-macos-ios/* release_addon/addons/nexus_resonance/bin/
+          cp -r artifacts/bin-linux-arm64/* release_addon/addons/nexus_resonance/bin/
+          cp -r artifacts/bin-visionos/* release_addon/addons/nexus_resonance/bin/
           cp LICENSE release_addon/addons/nexus_resonance/
 
       - name: Verify build outputs
@@ -269,6 +410,9 @@ jobs:
             release_addon/addons/nexus_resonance/bin/windows/nexus_resonance.dll \
             release_addon/addons/nexus_resonance/bin/linux/libnexus_resonance.so \
             release_addon/addons/nexus_resonance/bin/macos/libnexus_resonance.dylib \
+            release_addon/addons/nexus_resonance/bin/linux-arm64/libnexus_resonance.so \
+            release_addon/addons/nexus_resonance/bin/android/arm64-v8a/libnexus_resonance.so \
+            release_addon/addons/nexus_resonance/bin/visionos/libphonon.a \
           ; do
             if [ -f "$f" ]; then
               echo "OK: $f"
@@ -279,18 +423,22 @@ jobs:
 
       - name: Extract version from tag
         id: version
-        run: echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          echo "version=${TAG#v}" >> $GITHUB_OUTPUT
 
       - name: Create addon zip
         run: |
           mkdir -p release_packages
           cd release_addon
-          zip -r ../release_packages/nexus_resonance-v${{ steps.version.outputs.version }}.zip addons
+          zip -r ../release_packages/nexus_resonance-${{ steps.version.outputs.version }}.zip addons
+          cd ../release_packages && sha256sum *.zip | tee SHA256SUMS.txt
 
       - name: Prepare release body
         id: changelog
         run: |
-          VERSION="${GITHUB_REF#refs/tags/v}"
+          TAG="${GITHUB_REF#refs/tags/}"
+          VERSION="${TAG#v}"
           CHANGELOG_SECTION=""
           if [ -f ".github/scripts/extract_changelog.py" ]; then
             CHANGELOG_SECTION=$(VERSION="$VERSION" CHANGELOG_PATH="docs/CHANGELOG.md" python3 .github/scripts/extract_changelog.py 2>/dev/null || true)
@@ -308,10 +456,12 @@ jobs:
             echo "- macOS (universal)"
             echo "- Android (arm64, x86_64)"
             echo "- iOS (arm64)"
+            echo "- Linux arm64 (glibc 2.31+, for Steam Frame)"
+            echo "- visionOS (arm64)"
             echo ""
             echo "## Installation"
             echo ""
-            echo "Download **nexus_resonance-v${VERSION}.zip** and extract the \`addons/\` folder into your Godot project root."
+            echo "Download **nexus_resonance-${VERSION}.zip** and extract the \`addons/\` folder into your Godot project root."
             echo ""
             echo "See [README](https://github.com/${{ github.repository }}) for requirements and usage."
           } > release_body.md
@@ -321,6 +471,9 @@ jobs:
         with:
           generate_release_notes: false
           body_path: release_body.md
-          files: release_packages/*.zip
+          files: |
+            release_packages/*.zip
+            release_packages/SHA256SUMS.txt
+          prerelease: ${{ contains(github.ref_name, '-rc') }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
