@@ -38,9 +38,10 @@ android.x86_64 = "res://addons/nexus_resonance/bin/android/x86_64/libnexus_reson
 ios.debug.arm64 = "res://addons/nexus_resonance/bin/ios/libnexus_resonance.a"
 ios.release.arm64 = "res://addons/nexus_resonance/bin/ios/libnexus_resonance.a"
 
-; visionOS (arm64, static libraries like iOS)
-visionos.debug.arm64 = "res://addons/nexus_resonance/bin/visionos/libnexus_resonance.visionos.template_debug.arm64.a"
-visionos.release.arm64 = "res://addons/nexus_resonance/bin/visionos/libnexus_resonance.visionos.template_release.arm64.a"
+; visionOS (arm64). Static libraries, packed as .xcframework so that one entry serves both
+; the device and the simulator: Godot exports a single Xcode project for the two.
+visionos.debug.arm64 = "res://addons/nexus_resonance/bin/visionos-xcframeworks/libnexus_resonance.visionos.template_debug.xcframework"
+visionos.release.arm64 = "res://addons/nexus_resonance/bin/visionos-xcframeworks/libnexus_resonance.visionos.template_release.xcframework"
 
 [dependencies]
 
@@ -103,16 +104,16 @@ ios.release.arm64 = {
     "res://addons/nexus_resonance/bin/ios/libmysofa.a": ""
 }
 visionos.debug.arm64 = {
-    "res://addons/nexus_resonance/bin/visionos/libphonon.a": "",
-    "res://addons/nexus_resonance/bin/visionos/libgodot-cpp.visionos.template_debug.arm64.a": "",
-    "res://addons/nexus_resonance/bin/visionos/libpffft.a": "",
-    "res://addons/nexus_resonance/bin/visionos/libmysofa.a": ""
+    "res://addons/nexus_resonance/bin/visionos-xcframeworks/libphonon.xcframework": "",
+    "res://addons/nexus_resonance/bin/visionos-xcframeworks/libgodot-cpp.visionos.template_debug.xcframework": "",
+    "res://addons/nexus_resonance/bin/visionos-xcframeworks/libpffft.xcframework": "",
+    "res://addons/nexus_resonance/bin/visionos-xcframeworks/libmysofa.xcframework": ""
 }
 visionos.release.arm64 = {
-    "res://addons/nexus_resonance/bin/visionos/libphonon.a": "",
-    "res://addons/nexus_resonance/bin/visionos/libgodot-cpp.visionos.template_release.arm64.a": "",
-    "res://addons/nexus_resonance/bin/visionos/libpffft.a": "",
-    "res://addons/nexus_resonance/bin/visionos/libmysofa.a": ""
+    "res://addons/nexus_resonance/bin/visionos-xcframeworks/libphonon.xcframework": "",
+    "res://addons/nexus_resonance/bin/visionos-xcframeworks/libgodot-cpp.visionos.template_release.xcframework": "",
+    "res://addons/nexus_resonance/bin/visionos-xcframeworks/libpffft.xcframework": "",
+    "res://addons/nexus_resonance/bin/visionos-xcframeworks/libmysofa.xcframework": ""
 }
 
 [icons]

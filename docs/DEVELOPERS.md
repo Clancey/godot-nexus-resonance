@@ -173,9 +173,22 @@ make build-macos      # macOS (universal)
 make build-android    # Android arm64 + x86_64
 make build-ios        # iOS arm64 (macOS only; builds pffft/libmysofa deps)
 make build-visionos   # visionOS arm64 (macOS only; builds Steam Audio from source, needs STEAM_AUDIO_SRC=<steam-audio checkout with visionOS support> and CMake 3.28+)
+make build-visionos-simulator   # the same for the visionOS Simulator (arm64)
+make visionos-xcframeworks      # packs both into bin/visionos-xcframeworks/*.xcframework
 ```
 
 Output: `addons/nexus_resonance/bin/`
+
+### visionOS: device and simulator
+
+Godot exports one Xcode project for visionOS and that project is built either for the headset or
+for the simulator. A `.a` holds only one of the two, and Godot has no separate `.gdextension` entry
+for the simulator at export time, so the libraries are delivered as `.xcframework` bundles with a
+device slice (`xros-arm64`) and a simulator slice (`xros-arm64-simulator`). The exporter copies
+static `.xcframework` bundles into the Xcode project and links them without embedding them.
+
+zlib is not part of the set: libmysofa needs `inflate`, and that is resolved by the zlib built
+into Godot. Adding `libz.a` as well is not needed.
 
 ### Linux arm64 (cross-compile from an x86_64 Linux host)
 
