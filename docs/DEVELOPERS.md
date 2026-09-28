@@ -177,6 +177,29 @@ make build-visionos   # visionOS arm64 (macOS only; builds Steam Audio from sour
 
 Output: `addons/nexus_resonance/bin/`
 
+### Linux arm64 (cross-compile from an x86_64 Linux host)
+
+Valve's SDK zip has no Linux arm64 `libphonon.so`, so build it from the Steam Audio source first
+(`core/build/toolchain_linux_arm64.cmake`, Embree / IPP / MKL / Radeon Rays / TrueAudio Next off, PFFFT with NEON)
+and copy it to `src/lib/steamaudio/lib/linux-arm64/` and `addons/nexus_resonance/bin/linux-arm64/`.
+
+```bash
+# Tools (Debian/Ubuntu): clang lld binutils-aarch64-linux-gnu, or gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+
+# Optional: Debian 11 sysroot, so the result only needs glibc 2.31 (Steam Linux Runtime 3.0 "sniper")
+python3 scripts/make_linux_arm64_sysroot.py ~/sysroot-bullseye-arm64
+export LINUX_ARM64_SYSROOT=~/sysroot-bullseye-arm64
+
+# clang + lld (required when using a sysroot with an older libstdc++ than the host cross GCC)
+scons platform=linux arch=arm64 use_llvm=yes use_static_cpp=yes target=template_release build_tests=0
+
+# or: GNU cross toolchain, links against the host cross toolchain's glibc
+scons platform=linux arch=arm64 use_static_cpp=yes target=template_release build_tests=0
+```
+
+Output: `addons/nexus_resonance/bin/linux-arm64/libnexus_resonance.so` (objects in `build/linux-arm64/`).
+`build_tests=0` is needed because the Catch2 test binary is for the target and cannot run on the host.
+
 ## Test
 
 Unit tests (GUT) live in tracked `[test/unit/](../test/unit/)` and are synced into `project/test/` by `[.github/scripts/prepare_godot_ci_project.sh](../.github/scripts/prepare_godot_ci_project.sh)` (or copy locally before running):

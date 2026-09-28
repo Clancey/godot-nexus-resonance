@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 import os
 import shutil
+import platform as host_platform
 import sys
 
 # godot-cpp has no visionOS platform tool, so ours (tools/visionos.py) is loaded through
@@ -9,7 +10,41 @@ if ARGUMENTS.get("platform", "") == "visionos":
     ARGUMENTS.setdefault("custom_tools", "tools")
     ARGUMENTS.setdefault("arch", "arm64")
 
+# --- LINUX ARM64 CROSS-COMPILE ---
+# godot-cpp uses whatever compiler is in the SCons environment, so when building
+# `platform=linux arch=arm64` on a non-ARM host we hand it a pre-configured one.
+#   default          : GNU cross toolchain (aarch64-linux-gnu-gcc / g++)
+#   use_llvm=yes     : clang + lld with --target=aarch64-linux-gnu
+# Environment variables:
+#   LINUX_ARM64_CROSS_PREFIX  binutils/gcc prefix (default "aarch64-linux-gnu-")
+#   LINUX_ARM64_SYSROOT       sysroot to build against, e.g. a Debian 11 one to stay
+#                             compatible with glibc 2.31 (Steam Linux Runtime 3.0)
+_linux_arm64_cross = (
+    ARGUMENTS.get("platform", "") == "linux"
+    and ARGUMENTS.get("arch", "") == "arm64"
+    and host_platform.machine().lower() not in ("aarch64", "arm64")
+)
+if _linux_arm64_cross:
+    _prefix = os.environ.get("LINUX_ARM64_CROSS_PREFIX", "aarch64-linux-gnu-")
+    _sysroot = os.environ.get("LINUX_ARM64_SYSROOT", "")
+    _use_llvm = ARGUMENTS.get("use_llvm", "no").lower() in ("yes", "true", "1", "on")
+    env = Environment(tools=["default"], PLATFORM="")
+    env.Replace(AR=_prefix + "ar", RANLIB=_prefix + "ranlib")
+    _cross_flags = []
+    if _use_llvm:
+        # godot-cpp's linux tool selects clang/clang++ itself when use_llvm=yes.
+        _cross_flags.append("--target=aarch64-linux-gnu")
+        env.Append(LINKFLAGS=["-fuse-ld=lld"])
+    else:
+        env.Replace(CC=_prefix + "gcc", CXX=_prefix + "g++", LINK=_prefix + "g++", SHLINK=_prefix + "g++")
+    if _sysroot:
+        _cross_flags.append("--sysroot=" + os.path.abspath(_sysroot))
+    env.Append(CCFLAGS=_cross_flags, LINKFLAGS=_cross_flags)
+    Export("env")
+
 env = SConscript("src/lib/godot-cpp/SConstruct")
+
+_is_linux_arm64 = env["platform"] == "linux" and env["arch"] == "arm64"
 
 # Project setup
 project_name = "nexus_resonance"
@@ -18,6 +53,9 @@ project_name = "nexus_resonance"
 # Create a specific build directory based on platform and target (debug/release).
 # This keeps the source directory clean of .obj/.o files.
 build_dir = "build/{}/{}/".format(env["platform"], env["target"])
+if _is_linux_arm64:
+    # Keep arm64 objects apart from the x86_64 Linux build.
+    build_dir = "build/{}-{}/{}/".format(env["platform"], env["arch"], env["target"])
 
 # Tell SCons to map the 'src' directory to 'build_dir'.
 # duplicate=0 prevents physically copying the .cpp files to the build dir.
@@ -42,9 +80,18 @@ if env["platform"] == "windows":
 
 elif env["platform"] == "linux":
     env.Replace(SHLIBSUFFIX=".so")
-    arch_subdir = "linux-x64" if env["arch"] == "x86_64" else "linux-x86"
+    if env["arch"] == "x86_64":
+        arch_subdir = "linux-x64"
+    elif env["arch"] == "arm64":
+        # Not part of Valve's SDK zip: build libphonon.so from source (see docs/DEVELOPERS.md)
+        # and place it in <steam_audio_lib>/linux-arm64/.
+        arch_subdir = "linux-arm64"
+    else:
+        arch_subdir = "linux-x86"
     env.Append(LIBPATH=[os.path.join(steam_audio_lib, arch_subdir)])
     env.Append(LIBS=["phonon"])
+    # libphonon.so is loaded from the folder of libnexus_resonance.so. godot-cpp's linux tool
+    # already adds an $ORIGIN rpath (-Wl,-R,'$$ORIGIN'), so nothing more is needed here.
     # Optional: reduce symbol export on Linux (create linux_symbols.map if needed)
     symbols_map = "linux_symbols.map"
     if os.path.isfile(symbols_map):
@@ -91,7 +138,7 @@ elif env["platform"] == "macos":
 elif env["platform"] == "windows":
     target_path = os.path.join(target_base, "windows", "")
 elif env["platform"] == "linux":
-    target_path = os.path.join(target_base, "linux", "")
+    target_path = os.path.join(target_base, "linux-arm64" if _is_linux_arm64 else "linux", "")
 else:
     target_path = target_base
 
