@@ -355,18 +355,32 @@ jobs:
       - name: Install Steam Audio SDK (headers)
         run: bash .github/scripts/install_steam_audio_ci.sh
 
-      - name: Build
+      - name: Build (device)
         run: make build-visionos STEAM_AUDIO_SRC=steam-audio
+
+      - name: Build (simulator)
+        run: make build-visionos-simulator STEAM_AUDIO_SRC=steam-audio
 
       - name: Verify
         run: |
-          BIN=addons/nexus_resonance/bin/visionos
-          ls -la "$BIN"
-          for f in "$BIN"/*.a; do
+          BIN=addons/nexus_resonance/bin
+          for f in "$BIN"/visionos/*.a; do
             lipo -info "$f" | grep -q arm64
             otool -l "$f" | grep -m1 "platform 11"
           done
-          nm -g "$BIN"/libnexus_resonance.visionos.template_release.arm64.a | grep -q nexus_resonance_library_init
+          for f in "$BIN"/visionos_simulator/*.a; do
+            lipo -info "$f" | grep -q arm64
+            otool -l "$f" | grep -m1 "platform 12"
+          done
+          nm -g "$BIN"/visionos/libnexus_resonance.visionos.template_release.arm64.a | grep -q nexus_resonance_library_init
+
+      # Godot has no feature tag for the simulator, so one entry has to serve
+      # both: an xcframework holding the device and the simulator library.
+      - name: Pack xcframeworks
+        run: |
+          make visionos-xcframeworks
+          ls addons/nexus_resonance/bin/visionos-xcframeworks
+          rm -rf addons/nexus_resonance/bin/visionos addons/nexus_resonance/bin/visionos_simulator
 
       - name: Upload artifact
         uses: actions/upload-artifact@v5
@@ -412,7 +426,7 @@ jobs:
             release_addon/addons/nexus_resonance/bin/macos/libnexus_resonance.dylib \
             release_addon/addons/nexus_resonance/bin/linux-arm64/libnexus_resonance.so \
             release_addon/addons/nexus_resonance/bin/android/arm64-v8a/libnexus_resonance.so \
-            release_addon/addons/nexus_resonance/bin/visionos/libphonon.a \
+            release_addon/addons/nexus_resonance/bin/visionos-xcframeworks/libphonon.xcframework/Info.plist \
           ; do
             if [ -f "$f" ]; then
               echo "OK: $f"
