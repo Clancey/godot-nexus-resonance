@@ -5,6 +5,9 @@ on:
     tags:
       - 'v*'
       - 'fs-*'
+  # A tag pushed to the fork has not started this by itself. Run it by hand
+  # on the tag: gh workflow run release.yml --ref <tag>
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
