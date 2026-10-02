@@ -331,7 +331,7 @@ class ResonanceStreamPlayback : public AudioStreamPlayback {
     void set_base_playback(const Ref<AudioStreamPlayback>& p_playback);
     Ref<AudioStreamPlayback> get_base_playback() const { return base_playback; }
     Ref<AudioStreamPlayback> get_inner_stream_playback() const { return base_playback; }
-    void set_owner_player(ResonancePlayer* p_player) { owner_player_ = p_player; }
+    void set_owner_player(ResonancePlayer* p_player);
     void update_parameters(const PlaybackParameters& p_params);
 
     virtual int32_t _mix(AudioFrame* buffer, float rate_scale, int32_t frames) override; // Mixes audio frames into the buffer
@@ -473,6 +473,8 @@ class ResonancePlayer : public AudioStreamPlayer3D {
     };
     mutable std::mutex internal_playbacks_mutex_;
     std::vector<ResonanceStreamPlayback*> internal_playbacks_;
+    // Ownership starts at instantiation, before a voice is registered by _start.
+    std::vector<ResonanceStreamPlayback*> owned_playbacks_;
     std::atomic<int> playback_count_{0};
     PlaybackVoiceSnapshot playback_snap_[2];
     std::atomic<int> playback_snap_front_{0};
@@ -480,6 +482,7 @@ class ResonancePlayer : public AudioStreamPlayer3D {
     void internal_get_playback_snapshot_for_audio(PlaybackVoiceSnapshot& out) const;
     void internal_register_playback(ResonanceStreamPlayback* p);
     void internal_unregister_playback(ResonanceStreamPlayback* p);
+    void internal_track_owned_playback(ResonanceStreamPlayback* p);
     void internal_reclaim_voice_source(int32_t handle, uint32_t epoch);
     void internal_copy_internal_playbacks(std::vector<ResonanceStreamPlayback*>& out) const;
     void _broadcast_update_parameters(const PlaybackParameters& p);

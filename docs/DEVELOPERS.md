@@ -172,9 +172,77 @@ make build-linux      # Linux x64
 make build-macos      # macOS (universal)
 make build-android    # Android arm64 + x86_64
 make build-ios        # iOS arm64 (macOS only; builds pffft/libmysofa deps)
+make build-visionos   # visionOS arm64, debug + release (macOS with xros SDK)
+make build-visionos-simulator # visionOS simulator arm64 (xrsimulator SDK)
+make visionos-xcframeworks   # package both variants after building them
 ```
 
 Output: `addons/nexus_resonance/bin/`
+
+### Pinned SDK and release verification
+
+Local builds and CI share `scripts/install_steam_audio.py`. It downloads the core
+asset `steamaudio_4.8.1-visionos.zip` from
+[Clancey/steam-audio v4.8.1-visionos](https://github.com/Clancey/steam-audio/releases/tag/v4.8.1-visionos),
+checks SHA-256 `bd58fc49a49acb7eec7ced1a2d52fd528d7bf054e320a4468d0d61d566605b68`,
+and extracts its `steamaudio/` directory into `src/lib/steamaudio/`.
+`--archive /path/to/steamaudio_4.8.1-visionos.zip` accepts an offline copy with the
+same checksum. Cache hits validate the pin and required file hashes; stale,
+incomplete, or corrupted SDKs are replaced only after the replacement validates.
+Neither Steam Audio source checkouts nor committed SDK binaries are required.
+
+The added visionOS/Linux arm64 SDK libraries use PFFFT, without IPP/Embree.
+The upstream desktop/mobile SDK libraries remain included. SDK libraries are
+dependencies, not the Godot GDExtension itself.
+
+The Release workflow can be run manually on `visionos` (or another branch).
+Manual runs build and verify every platform, then upload `release-package`
+containing `nexus_resonance-<commit>.zip` and `SHA256SUMS.txt`; they never publish
+a GitHub release. Future pushes of new `v*`/`fs-*` tags retain release publication.
+Existing tags must not be moved to retry a release with different source.
+
+The zip contains the complete `addons/nexus_resonance/` tree, its matching
+manifest, `BUILD_PROVENANCE.json`, per-binary `BINARY_SHA256SUMS.txt`, and a
+`bin/VERSION` source commit. `scripts/verify_release.py` fails on missing manifest
+resources or incomplete XCFramework slices. Existing desktop/Android/iOS
+debug/release output names are shared: the final package contains the last
+(release) build, while visionOS retains separate debug/release libraries.
+
+### Apple targets
+
+macOS explicitly builds universal arm64 + x86_64
+`bin/macos/libnexus_resonance.dylib`, alongside the SDK's `libphonon.dylib`.
+`.github/scripts/test_macos_addon.sh` verifies native headless Godot loading and
+playback-owner teardown; set `GODOT` to override the executable.
+
+visionOS requires Xcode's device and simulator SDKs and targets **visionOS 2.0+**.
+The seven bundles under `bin/visionos-xcframeworks/` contain arm64 device and
+simulator slices: debug/release `libnexus_resonance.visionos.*` and
+`libgodot-cpp.visionos.*`, plus `libphonon`, `libpffft`, and `libmysofa`.
+The manifest selects the appropriate debug/release bundles; Xcode selects the
+destination slice. The exporting Godot build must support static visionOS
+GDExtension XCFrameworks. Applications must link **`-lz -lc++`**; do not assume
+Godot's private bundled zlib provides these symbols. No additional libz.a is
+packaged. `bash scripts/verify_visionos.sh` checks architectures/platforms and
+links the actual addon plus dependencies for both destinations and targets.
+Link success is not headset or simulator runtime verification.
+
+### Linux arm64
+
+Use the prebuilt `lib/linux-arm64/libphonon.so`; no Steam Audio source build is
+needed. The SDK reports glibc >= 2.29. The addon Release job uses a Debian 11
+sysroot and rejects any combined addon/SDK requirement above glibc 2.31.
+
+```bash
+# On x86_64 Linux, install clang, lld, and aarch64-linux-gnu binutils/GCC first.
+python3 scripts/make_linux_arm64_sysroot.py build/sysroot-bullseye-arm64
+LINUX_ARM64_SYSROOT="$PWD/build/sysroot-bullseye-arm64" \
+  scons platform=linux arch=arm64 use_llvm=yes use_static_cpp=yes \
+  target=template_release build_tests=0
+```
+
+Output: `bin/linux-arm64/libnexus_resonance.so`. Ship the SDK's matching
+`libphonon.so` beside it. Cross-compilation does not verify execution on ARM Linux.
 
 ## Test
 
@@ -367,5 +435,4 @@ All Steam Audio processors (Direct, Reflection, Path, Mixer, Ambisonic) follow a
 | Bake pipeline             | `resonance_baker.cpp`, `editor/resonance_bake_runner.gd`                                                      |
 | Runtime static rebuild    | `resonance_runtime_exporter.gd`, `ResonanceServer` export/replace, `doc_classes/ResonanceRuntimeExporter.xml` |
 | Native node migration     | [docs/adr/001-native-resonance-node-migration.md](adr/001-native-resonance-node-migration.md)                 |
-
 

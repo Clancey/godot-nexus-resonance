@@ -350,6 +350,16 @@ Ref<AudioStreamPlayback> ResonanceStream::_instantiate_playback() const {
     return playback;
 }
 
+void ResonanceStreamPlayback::set_owner_player(ResonancePlayer* p_player) {
+    if (owner_player_ == p_player)
+        return;
+    if (owner_player_)
+        owner_player_->internal_unregister_playback(this);
+    owner_player_ = p_player;
+    if (owner_player_)
+        owner_player_->internal_track_owned_playback(this);
+}
+
 void ResonanceReverbPlayback::set_parent_player(ResonancePlayer* p_player) {
     parent_player = p_player;
 }
@@ -507,7 +517,8 @@ ResonancePlayer::~ResonancePlayer() {
     std::vector<ResonanceStreamPlayback*> copy;
     {
         std::lock_guard<std::mutex> lock(internal_playbacks_mutex_);
-        copy.swap(internal_playbacks_);
+        copy.swap(owned_playbacks_);
+        internal_playbacks_.clear();
     }
     for (ResonanceStreamPlayback* p : copy) {
         if (p)
@@ -557,10 +568,17 @@ void ResonancePlayer::internal_unregister_playback(ResonanceStreamPlayback* p) {
         std::lock_guard<std::mutex> lock(internal_playbacks_mutex_);
         const size_t before = internal_playbacks_.size();
         internal_playbacks_.erase(std::remove(internal_playbacks_.begin(), internal_playbacks_.end(), p), internal_playbacks_.end());
+        owned_playbacks_.erase(std::remove(owned_playbacks_.begin(), owned_playbacks_.end(), p), owned_playbacks_.end());
         if (internal_playbacks_.size() < before)
             playback_count_.fetch_sub(1, std::memory_order_release);
     }
     internal_publish_playback_snapshot();
+}
+
+void ResonancePlayer::internal_track_owned_playback(ResonanceStreamPlayback* p) {
+    std::lock_guard<std::mutex> lock(internal_playbacks_mutex_);
+    if (std::find(owned_playbacks_.begin(), owned_playbacks_.end(), p) == owned_playbacks_.end())
+        owned_playbacks_.push_back(p);
 }
 
 void ResonancePlayer::internal_reclaim_voice_source(int32_t handle, uint32_t epoch) {

@@ -4,6 +4,8 @@ on:
   push:
     tags:
       - 'v*'
+      - 'fs-*'
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -44,7 +46,9 @@ jobs:
           key: steamaudio-${{ hashFiles('scripts/install_steam_audio.py') }}
 
       - name: Install Steam Audio SDK
-        run: bash .github/scripts/install_steam_audio_ci.sh
+        run: |
+          python3 -m unittest discover -s scripts -p 'test_*.py'
+          bash .github/scripts/install_steam_audio_ci.sh
 
       - name: Add GCC problem matcher
         run: echo "::add-matcher::${{ github.workspace }}/.github/gcc-problem-matcher.json"
@@ -213,8 +217,21 @@ jobs:
         env:
           SCONS_CACHE: ${{ github.workspace }}/.scons-cache
         run: |
-          scons platform=macos target=template_debug build_tests=0 -j$(sysctl -n hw.logicalcpu)
-          scons platform=macos target=template_release build_tests=0 -j$(sysctl -n hw.logicalcpu)
+          scons platform=macos arch=universal target=template_debug build_tests=0 -j$(sysctl -n hw.logicalcpu)
+          lipo -verify_arch arm64 x86_64 addons/nexus_resonance/bin/macos/libnexus_resonance.dylib
+          scons platform=macos arch=universal target=template_release build_tests=0 -j$(sysctl -n hw.logicalcpu)
+          lipo -verify_arch arm64 x86_64 addons/nexus_resonance/bin/macos/libnexus_resonance.dylib
+          lipo -verify_arch arm64 x86_64 addons/nexus_resonance/bin/macos/libphonon.dylib
+
+      - name: Setup Godot for addon load and lifetime regression
+        uses: chickensoft-games/setup-godot@v2
+        with:
+          version: 4.7.2
+          use-dotnet: false
+          include-templates: false
+
+      - name: Verify macOS addon in Godot
+        run: bash .github/scripts/test_macos_addon.sh
 
       - name: Build iOS
         env:
@@ -235,9 +252,88 @@ jobs:
           name: bin-macos-ios
           path: addons/nexus_resonance/bin/
 
+  build-linux-arm64:
+    name: Build (Linux arm64)
+    runs-on: ubuntu-22.04
+    env:
+      SYSROOT: ${{ github.workspace }}/sysroot-bullseye-arm64
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang lld binutils-aarch64-linux-gnu gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+          python3 -m pip install scons
+      - name: Cache Steam Audio SDK
+        uses: actions/cache@v5
+        with:
+          path: src/lib/steamaudio
+          key: steamaudio-${{ hashFiles('scripts/install_steam_audio.py') }}
+      - name: Install pinned Steam Audio SDK
+        run: bash .github/scripts/install_steam_audio_ci.sh
+      - name: Create sysroot
+        run: python3 scripts/make_linux_arm64_sysroot.py "$SYSROOT"
+      - name: Build extension
+        env:
+          LINUX_ARM64_SYSROOT: ${{ env.SYSROOT }}
+        run: |
+          BIN=addons/nexus_resonance/bin/linux-arm64
+          mkdir -p "$BIN"
+          cp src/lib/steamaudio/lib/linux-arm64/libphonon.so "$BIN/"
+          scons platform=linux arch=arm64 use_llvm=yes use_static_cpp=yes target=template_debug build_tests=0 -j$(nproc)
+          scons platform=linux arch=arm64 use_llvm=yes use_static_cpp=yes target=template_release build_tests=0 -j$(nproc)
+          aarch64-linux-gnu-strip --strip-unneeded "$BIN/libnexus_resonance.so"
+      - name: Verify Linux arm64
+        run: |
+          BIN=addons/nexus_resonance/bin/linux-arm64
+          for f in "$BIN"/*.so; do
+            file "$f" | grep "ARM aarch64"
+          done
+          MAX=$(aarch64-linux-gnu-objdump -T "$BIN"/*.so | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1)
+          echo "Highest glibc requirement: $MAX"
+          python3 -c "assert tuple(map(int, '$MAX'.split('_')[1].split('.'))) <= (2,31)"
+      - uses: actions/upload-artifact@v5
+        with:
+          name: bin-linux-arm64
+          path: addons/nexus_resonance/bin/
+          if-no-files-found: error
+
+  build-visionos:
+    name: Build (visionOS)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+      - name: Install dependencies
+        run: |
+          PIP_BREAK_SYSTEM_PACKAGES=1 python3 -m pip install scons
+          xcrun --sdk xros --show-sdk-path
+          xcrun --sdk xrsimulator --show-sdk-path
+      - name: Cache Steam Audio SDK
+        uses: actions/cache@v5
+        with:
+          path: src/lib/steamaudio
+          key: steamaudio-${{ hashFiles('scripts/install_steam_audio.py') }}
+      - name: Install pinned Steam Audio SDK
+        run: bash .github/scripts/install_steam_audio_ci.sh
+      - name: Build addon for device and simulator
+        run: make build-visionos build-visionos-simulator SCONS_FLAGS="-j$(sysctl -n hw.logicalcpu)"
+      - name: Verify addon architectures and final links
+        run: bash scripts/verify_visionos.sh
+      - name: Pack XCFrameworks
+        run: make visionos-xcframeworks
+      - uses: actions/upload-artifact@v5
+        with:
+          name: bin-visionos
+          path: addons/nexus_resonance/bin/visionos-xcframeworks/
+          if-no-files-found: error
+
   create-release:
     name: Create Release
-    needs: [build-linux-android, build-windows, build-macos-ios]
+    needs: [build-linux-android, build-linux-arm64, build-windows, build-macos-ios, build-visionos]
     runs-on: ubuntu-22.04
     steps:
       - name: Checkout
@@ -258,36 +354,54 @@ jobs:
           cp -r artifacts/bin-linux-android/* release_addon/addons/nexus_resonance/bin/
           cp -r artifacts/bin-windows/* release_addon/addons/nexus_resonance/bin/
           cp -r artifacts/bin-macos-ios/* release_addon/addons/nexus_resonance/bin/
+          cp -r artifacts/bin-linux-arm64/* release_addon/addons/nexus_resonance/bin/
+          mkdir -p release_addon/addons/nexus_resonance/bin/visionos-xcframeworks
+          cp -r artifacts/bin-visionos/* release_addon/addons/nexus_resonance/bin/visionos-xcframeworks/
           cp LICENSE release_addon/addons/nexus_resonance/
+          printf '%s\n' "$GITHUB_SHA" > release_addon/addons/nexus_resonance/bin/VERSION
+          python3 - <<'PY'
+          import json, os, sys
+          from pathlib import Path
+          sys.path.insert(0, "scripts")
+          import install_steam_audio as sdk
+          Path("release_addon/addons/nexus_resonance/BUILD_PROVENANCE.json").write_text(json.dumps({
+              "commit": os.environ["GITHUB_SHA"],
+              "run_id": os.environ["GITHUB_RUN_ID"],
+              "sdk_url": sdk.SDK_URL,
+              "sdk_sha256": sdk.SDK_SHA256,
+          }, indent=2) + "\n")
+          PY
 
       - name: Verify build outputs
         run: |
-          echo "=== Release addon contents ==="
-          find release_addon -type f | sort
-          echo ""
-          for f in \
-            release_addon/addons/nexus_resonance/bin/windows/nexus_resonance.dll \
-            release_addon/addons/nexus_resonance/bin/linux/libnexus_resonance.so \
-            release_addon/addons/nexus_resonance/bin/macos/libnexus_resonance.dylib \
-          ; do
-            if [ -f "$f" ]; then
-              echo "OK: $f"
-            else
-              echo "WARN: $f not found"
-            fi
-          done
+          python3 scripts/verify_release.py release_addon
 
       - name: Extract version from tag
         id: version
-        run: echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            echo "version=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Create addon zip
         run: |
           mkdir -p release_packages
           cd release_addon
-          zip -r ../release_packages/nexus_resonance-v${{ steps.version.outputs.version }}.zip addons
+          zip -qr ../release_packages/nexus_resonance-${{ steps.version.outputs.version }}.zip addons
+          cd ../release_packages
+          sha256sum *.zip > SHA256SUMS.txt
+
+      - name: Upload verified package without publishing
+        uses: actions/upload-artifact@v5
+        with:
+          name: release-package
+          path: release_packages/
+          if-no-files-found: error
 
       - name: Prepare release body
+        if: startsWith(github.ref, 'refs/tags/') && github.event_name == 'push'
         id: changelog
         run: |
           VERSION="${GITHUB_REF#refs/tags/v}"
@@ -305,22 +419,27 @@ jobs:
             echo "This release includes binaries for all supported platforms:"
             echo "- Windows x86_64 (MSVC)"
             echo "- Linux x86_64"
+            echo "- Linux arm64 (glibc 2.31 or newer)"
             echo "- macOS (universal)"
             echo "- Android (arm64, x86_64)"
             echo "- iOS (arm64)"
+            echo "- visionOS 2.0+ (arm64 device and simulator XCFrameworks; link -lz -lc++)"
             echo ""
             echo "## Installation"
             echo ""
-            echo "Download **nexus_resonance-v${VERSION}.zip** and extract the \`addons/\` folder into your Godot project root."
+            echo "Download **nexus_resonance-${GITHUB_REF_NAME}.zip** and extract the \`addons/\` folder into your Godot project root."
             echo ""
             echo "See [README](https://github.com/${{ github.repository }}) for requirements and usage."
           } > release_body.md
 
       - name: Create Release
+        if: startsWith(github.ref, 'refs/tags/') && github.event_name == 'push'
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: false
           body_path: release_body.md
-          files: release_packages/*.zip
+          files: |
+            release_packages/*.zip
+            release_packages/SHA256SUMS.txt
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

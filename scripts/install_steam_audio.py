@@ -1,91 +1,130 @@
 #!/usr/bin/env python3
-"""
-Download and extract Steam Audio SDK binaries for Nexus Resonance.
-Uses the official ValveSoftware/steam-audio releases.
-Run from project root: python scripts/install_steam_audio.py
-"""
-import os
-import sys
-import zipfile
-import urllib.request
+"""Install the checksum-pinned Steam Audio core SDK for local builds and CI."""
+import argparse
+import hashlib
 import json
+import os
+from pathlib import Path
+import shutil
+import sys
+import tempfile
+import urllib.error
+import urllib.request
+import zipfile
 
-STEAM_AUDIO_VERSION = "4.8.1"
-GITHUB_API_URL = "https://api.github.com/repos/ValveSoftware/steam-audio/releases/tags/v" + STEAM_AUDIO_VERSION
-STEAM_AUDIO_LIB = "src/lib/steamaudio"
-ZIP_NAME = "steamaudio.zip"
+STEAM_AUDIO_VERSION = "4.8.1-visionos"
+SDK_URL = (
+    "https://github.com/Clancey/steam-audio/releases/download/"
+    f"v{STEAM_AUDIO_VERSION}/steamaudio_{STEAM_AUDIO_VERSION}.zip"
+)
+SDK_SHA256 = "bd58fc49a49acb7eec7ced1a2d52fd528d7bf054e320a4468d0d61d566605b68"
+DEST = Path(__file__).resolve().parents[1] / "src/lib/steamaudio"
+REQUIRED_FILES = (
+    "include/phonon.h", "include/phonon_interfaces.h", "include/phonon_version.h",
+    "lib/windows-x64/phonon.dll", "lib/windows-x64/phonon.lib",
+    "lib/windows-x64/GPUUtilities.dll", "lib/windows-x64/TrueAudioNext.dll",
+    "lib/linux-x64/libphonon.so", "lib/linux-arm64/libphonon.so",
+    "lib/osx/libphonon.dylib", "lib/ios/libphonon.a",
+    "lib/android-armv8/libphonon.so", "lib/android-x64/libphonon.so",
+) + tuple(
+    f"lib/{platform}/{library}.a"
+    for platform in ("visionos", "visionos_simulator")
+    for library in ("libphonon", "libpffft", "libmysofa")
+)
+STAMP = ".sdk-integrity.json"
 
 
-def get_download_url():
-    """Fetch download URL from GitHub API."""
+def sha256(path):
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def required_hashes(directory):
+    hashes = {}
+    for name in REQUIRED_FILES:
+        path = directory / name
+        if path.is_symlink() or not path.is_file() or path.stat().st_size == 0:
+            raise ValueError(f"Missing or invalid SDK file: {path}")
+        hashes[name] = sha256(path)
+    return hashes
+
+
+def cache_valid(destination):
+    stamp = destination / STAMP
+    if not stamp.is_file():
+        return False
     try:
-        req = urllib.request.Request(
-            GITHUB_API_URL,
-            headers={"Accept": "application/vnd.github.v3+json"},
+        recorded = json.loads(stamp.read_text())
+        return (
+            recorded.get("archive_sha256") == SDK_SHA256
+            and recorded.get("files") == required_hashes(destination)
         )
-        with urllib.request.urlopen(req, timeout=10) as r:
-            data = json.loads(r.read().decode())
-    except Exception as e:
-        print(f"Failed to fetch release info: {e}")
-        return None
+    except (OSError, ValueError) as error:
+        print(f"SDK cache validation failed: {error}", file=sys.stderr)
+        return False
 
-    for asset in data.get("assets", []):
-        name = asset.get("name", "")
-        if name.endswith(".zip") and ("steamaudio" in name.lower() or "phonon" in name.lower() or "c_api" in name.lower()):
-            return asset.get("browser_download_url")
-    print("No Steam Audio SDK zip found in release assets.")
-    return None
+
+def install(archive=None, destination=DEST):
+    destination = Path(destination)
+    if destination.is_symlink():
+        raise ValueError(f"Refusing to replace symlinked SDK: {destination}")
+    if cache_valid(destination):
+        print(f"Steam Audio {STEAM_AUDIO_VERSION}: verified cached SDK at {destination}")
+        return
+    if destination.exists():
+        print(f"Replacing stale or incomplete SDK at {destination}")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=".steamaudio-", dir=destination.parent) as work:
+        work = Path(work)
+        if archive is None:
+            archive = work / "sdk.zip"
+            print(f"Downloading {SDK_URL}")
+            with urllib.request.urlopen(SDK_URL, timeout=120) as response, archive.open("wb") as output:
+                shutil.copyfileobj(response, output)
+        else:
+            archive = Path(archive)
+        actual = sha256(archive)
+        if actual != SDK_SHA256:
+            raise ValueError(f"SDK SHA-256 mismatch: expected {SDK_SHA256}, got {actual}")
+        staging = work / "extracted"
+        with zipfile.ZipFile(archive) as sdk:
+            for entry in sdk.infolist():
+                parts = entry.filename.split("/")
+                if parts[0] != "steamaudio" or ".." in parts or "\\" in entry.filename:
+                    raise ValueError(f"Unexpected SDK archive path: {entry.filename}")
+                if (entry.external_attr >> 16) & 0o170000 == 0o120000:
+                    raise ValueError(f"Unexpected SDK archive symlink: {entry.filename}")
+            sdk.extractall(staging)
+        installed = staging / "steamaudio"
+        hashes = required_hashes(installed)
+        (installed / STAMP).write_text(
+            json.dumps({"archive_sha256": SDK_SHA256, "files": hashes}, indent=2) + "\n"
+        )
+        old = work / "previous"
+        if destination.exists():
+            os.replace(destination, old)
+        try:
+            os.replace(installed, destination)
+        except OSError:
+            if old.exists():
+                os.replace(old, destination)
+            raise
+    print(f"Installed verified Steam Audio {STEAM_AUDIO_VERSION} at {destination}")
 
 
 def main():
-    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    os.chdir(root)
-
-    lib_dir = os.path.join(STEAM_AUDIO_LIB, "lib")
-    if os.path.isdir(lib_dir):
-        # Check if we already have the expected structure
-        expected = ["windows-x64", "linux-x64", "osx", "android-armv8", "android-x64", "ios"]
-        has_all = all(os.path.isdir(os.path.join(lib_dir, d)) for d in expected)
-        if has_all:
-            print(f"Steam Audio lib already present at {lib_dir}. Skipping download.")
-            return 0
-
-    url = get_download_url()
-    if not url:
-        sys.exit(1)
-
-    zip_path = os.path.join(STEAM_AUDIO_LIB, ZIP_NAME)
-    os.makedirs(STEAM_AUDIO_LIB, exist_ok=True)
-
-    print(f"Downloading Steam Audio v{STEAM_AUDIO_VERSION}...")
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--archive", type=Path, help="Use a local copy of the pinned archive")
+    args = parser.parse_args()
     try:
-        urllib.request.urlretrieve(url, zip_path)
-    except Exception as e:
-        print(f"Download failed: {e}")
-        sys.exit(1)
-
-    print("Extracting...")
-    lib_parent = os.path.dirname(STEAM_AUDIO_LIB)  # src/lib
-    dest_path = os.path.join(root, STEAM_AUDIO_LIB)
-    with zipfile.ZipFile(zip_path, "r") as z:
-        z.extractall(lib_parent)
-    # Zip may extract to steamaudio_4.8.1/ or steamaudio/ - ensure final path is steamaudio
-    for entry in os.listdir(lib_parent):
-        if "steamaudio" in entry.lower() and entry != "steamaudio":
-            src = os.path.join(lib_parent, entry)
-            if os.path.isdir(src):
-                import shutil
-                if os.path.exists(dest_path):
-                    shutil.rmtree(dest_path)
-                shutil.move(src, dest_path)
-                break
-
-    try:
-        os.remove(zip_path)
-    except OSError:
-        pass
-
-    print("Done. Steam Audio binaries are in src/lib/steamaudio/lib/")
+        install(args.archive)
+    except (OSError, ValueError, urllib.error.URLError, zipfile.BadZipFile) as error:
+        print(f"Steam Audio installation failed: {error}", file=sys.stderr)
+        return 1
+    return 0
 
 
 if __name__ == "__main__":

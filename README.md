@@ -131,6 +131,11 @@ Bake `reflection_type`, pathing on/off, and ambisonics order come from [Resonanc
 
 ## Developing
 
+Builds use the SHA-256-pinned [Steam Audio v4.8.1-visionos core SDK](https://github.com/Clancey/steam-audio/releases/tag/v4.8.1-visionos).
+Run `python3 scripts/install_steam_audio.py` after initializing submodules. SDK
+binaries are downloaded, not committed. See [build instructions](docs/DEVELOPERS.md#build)
+for macOS universal, visionOS device/simulator XCFrameworks, and Linux arm64.
+
 Before you open a PR, build with unit tests enabled and run the Catch2 binary (this matches what CI runs on Linux and Windows):
 
 ```bash

@@ -1,13 +1,11 @@
 # Nexus Resonance - Cross-platform build
 # Requires: Python 3, SCons 4+, platform toolchains (MSVC/gcc/clang, Android NDK for Android)
 
-.PHONY: install-steam-audio build build-windows build-linux build-macos build-android build-ios ios-deps release help
+.PHONY: install-steam-audio build build-windows build-linux build-macos build-android build-ios ios-deps build-visionos build-visionos-simulator visionos-deps visionos-simulator-deps visionos-xcframeworks release help
 
 # Install Steam Audio SDK (download from GitHub releases)
 install-steam-audio:
-	$(if $(wildcard src/lib/steamaudio/lib),\
-		@echo "Steam Audio lib already present. Skipping.",\
-		python3 scripts/install_steam_audio.py)
+	python3 scripts/install_steam_audio.py
 
 # Build for current/default platform
 build: install-steam-audio
@@ -23,8 +21,8 @@ build-linux: install-steam-audio
 	scons platform=linux target=template_release
 
 build-macos: install-steam-audio
-	scons platform=macos target=template_debug
-	scons platform=macos target=template_release
+	scons platform=macos arch=universal target=template_debug
+	scons platform=macos arch=universal target=template_release
 
 build-android: install-steam-audio
 	scons platform=android arch=arm64 target=template_debug
@@ -57,6 +55,33 @@ build-ios: install-steam-audio ios-deps
 	cp src/lib/godot-cpp/bin/libgodot-cpp.ios.template_debug.arm64.a addons/nexus_resonance/bin/ios/
 	cp src/lib/godot-cpp/bin/libgodot-cpp.ios.template_release.arm64.a addons/nexus_resonance/bin/ios/
 
+VISIONOS_BIN = addons/nexus_resonance/bin/visionos
+VISIONOS_SIM_BIN = addons/nexus_resonance/bin/visionos_simulator
+SCONS_FLAGS ?= -j4
+
+visionos-deps: install-steam-audio
+	mkdir -p $(VISIONOS_BIN)
+	cp src/lib/steamaudio/lib/visionos/libphonon.a src/lib/steamaudio/lib/visionos/libpffft.a src/lib/steamaudio/lib/visionos/libmysofa.a $(VISIONOS_BIN)/
+
+visionos-simulator-deps: install-steam-audio
+	mkdir -p $(VISIONOS_SIM_BIN)
+	cp src/lib/steamaudio/lib/visionos_simulator/libphonon.a src/lib/steamaudio/lib/visionos_simulator/libpffft.a src/lib/steamaudio/lib/visionos_simulator/libmysofa.a $(VISIONOS_SIM_BIN)/
+
+build-visionos: visionos-deps
+	scons platform=visionos arch=arm64 target=template_debug build_tests=0 $(SCONS_FLAGS)
+	scons platform=visionos arch=arm64 target=template_release build_tests=0 $(SCONS_FLAGS)
+	cp src/lib/godot-cpp/bin/libgodot-cpp.visionos.template_debug.arm64.a $(VISIONOS_BIN)/
+	cp src/lib/godot-cpp/bin/libgodot-cpp.visionos.template_release.arm64.a $(VISIONOS_BIN)/
+
+build-visionos-simulator: visionos-simulator-deps
+	scons platform=visionos arch=arm64 visionos_simulator=yes target=template_debug build_tests=0 $(SCONS_FLAGS)
+	scons platform=visionos arch=arm64 visionos_simulator=yes target=template_release build_tests=0 $(SCONS_FLAGS)
+	cp src/lib/godot-cpp/bin/libgodot-cpp.visionos.template_debug.arm64.simulator.a $(VISIONOS_SIM_BIN)/
+	cp src/lib/godot-cpp/bin/libgodot-cpp.visionos.template_release.arm64.simulator.a $(VISIONOS_SIM_BIN)/
+
+visionos-xcframeworks:
+	bash scripts/make_visionos_xcframeworks.sh $(VISIONOS_BIN) $(VISIONOS_SIM_BIN) addons/nexus_resonance/bin/visionos-xcframeworks
+
 # Build all desktop platforms (Windows, Linux, macOS)
 release: build-windows build-linux build-macos
 
@@ -72,6 +97,9 @@ help:
 	@echo "  build-android        - Build Android arm64 + x86_64"
 	@echo "  ios-deps            - Build pffft and libmysofa for iOS arm64"
 	@echo "  build-ios            - Build iOS arm64 (debug + release)"
+	@echo "  build-visionos       - Build visionOS arm64 using the pinned prebuilt SDK"
+	@echo "  build-visionos-simulator - Build visionOS simulator arm64"
+	@echo "  visionos-xcframeworks - Package both visionOS variants"
 	@echo "  release             - Build all desktop platforms"
 	@echo ""
 	@echo "Manual SCons examples:"

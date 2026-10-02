@@ -213,8 +213,8 @@ jobs:
         env:
           SCONS_CACHE: ${{ github.workspace }}/.scons-cache
         run: |
-          scons platform=macos target=template_debug build_tests=0 -j$(sysctl -n hw.logicalcpu)
-          scons platform=macos target=template_release build_tests=0 -j$(sysctl -n hw.logicalcpu)
+          scons platform=macos arch=universal target=template_debug build_tests=0 -j$(sysctl -n hw.logicalcpu)
+          scons platform=macos arch=universal target=template_release build_tests=0 -j$(sysctl -n hw.logicalcpu)
 
       - name: Build iOS
         env:

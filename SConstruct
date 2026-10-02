@@ -1,7 +1,33 @@
 #!/usr/bin/env python
 import os
+import platform as host_platform
 import shutil
 import sys
+
+if ARGUMENTS.get("platform") == "visionos":
+    ARGUMENTS.setdefault("custom_tools", "tools")
+    ARGUMENTS.setdefault("arch", "arm64")
+
+if (
+    ARGUMENTS.get("platform") == "linux"
+    and ARGUMENTS.get("arch") == "arm64"
+    and host_platform.machine().lower() not in ("aarch64", "arm64")
+):
+    prefix = os.environ.get("LINUX_ARM64_CROSS_PREFIX", "aarch64-linux-gnu-")
+    sysroot = os.environ.get("LINUX_ARM64_SYSROOT", "")
+    use_llvm = ARGUMENTS.get("use_llvm", "no").lower() in ("yes", "true", "1", "on")
+    env = Environment(tools=["default"], PLATFORM="")
+    env.Replace(AR=prefix + "ar", RANLIB=prefix + "ranlib")
+    cross_flags = []
+    if use_llvm:
+        cross_flags.append("--target=aarch64-linux-gnu")
+        env.Append(LINKFLAGS=["-fuse-ld=lld"])
+    else:
+        env.Replace(CC=prefix + "gcc", CXX=prefix + "g++", LINK=prefix + "g++", SHLINK=prefix + "g++")
+    if sysroot:
+        cross_flags.append("--sysroot=" + os.path.abspath(sysroot))
+    env.Append(CCFLAGS=cross_flags, LINKFLAGS=cross_flags)
+    Export("env")
 
 env = SConscript("src/lib/godot-cpp/SConstruct")
 
@@ -11,7 +37,7 @@ project_name = "nexus_resonance"
 # --- BUILD DIRECTORY SETUP ---
 # Create a specific build directory based on platform and target (debug/release).
 # This keeps the source directory clean of .obj/.o files.
-build_dir = "build/{}/{}/".format(env["platform"], env["target"])
+build_dir = "build/{}/{}/".format(env["platform"], env["suffix"].lstrip("."))
 
 # Tell SCons to map the 'src' directory to 'build_dir'.
 # duplicate=0 prevents physically copying the .cpp files to the build dir.
@@ -36,7 +62,7 @@ if env["platform"] == "windows":
 
 elif env["platform"] == "linux":
     env.Replace(SHLIBSUFFIX=".so")
-    arch_subdir = "linux-x64" if env["arch"] == "x86_64" else "linux-x86"
+    arch_subdir = {"x86_64": "linux-x64", "arm64": "linux-arm64", "x86_32": "linux-x86"}[env["arch"]]
     env.Append(LIBPATH=[os.path.join(steam_audio_lib, arch_subdir)])
     env.Append(LIBS=["phonon"])
     # Optional: reduce symbol export on Linux (create linux_symbols.map if needed)
@@ -61,6 +87,11 @@ elif env["platform"] == "ios":
     env.Append(LIBPATH=[os.path.join(steam_audio_lib, "ios")])
     env.Append(LIBS=["phonon"])
 
+elif env["platform"] == "visionos":
+    steam_platform = "visionos_simulator" if env["visionos_simulator"] else "visionos"
+    env.Append(LIBPATH=[os.path.join(steam_audio_lib, steam_platform)])
+    env.Append(LIBS=["phonon", "pffft", "mysofa", "z", "c++"])
+
 # TARGET PATH (addon source of truth under repo root)
 target_base = "addons/nexus_resonance/bin/"
 target_name = "nexus_resonance"
@@ -72,12 +103,14 @@ if env["platform"] == "android":
     target_path = os.path.join(target_base, "android", abi_dir, "")
 elif env["platform"] == "ios":
     target_path = os.path.join(target_base, "ios", "")
+elif env["platform"] == "visionos":
+    target_path = os.path.join(target_base, steam_platform, "")
 elif env["platform"] == "macos":
     target_path = os.path.join(target_base, "macos", "")
 elif env["platform"] == "windows":
     target_path = os.path.join(target_base, "windows", "")
 elif env["platform"] == "linux":
-    target_path = os.path.join(target_base, "linux", "")
+    target_path = os.path.join(target_base, "linux-arm64" if env["arch"] == "arm64" else "linux", "")
 else:
     target_path = target_base
 
@@ -103,6 +136,18 @@ if env["platform"] == "ios":
     library = env.StaticLibrary(
         target=target_path + "lib" + target_name,
         source=sources,
+    )
+elif env["platform"] == "visionos":
+    library = env.StaticLibrary(
+        target=target_path + "lib" + target_name + env["suffix"] + env["LIBSUFFIX"],
+        source=sources,
+    )
+elif env["platform"] == "android":
+    library = env.SharedLibrary(
+        target=target_path + "lib" + target_name,
+        source=sources,
+        SHLIBPREFIX="",
+        SHLIBSUFFIX=".so",
     )
 else:
     library = env.SharedLibrary(
@@ -139,7 +184,7 @@ if env["platform"] == "windows":
     env.AddPostAction(library, env.Action(copy_steam_dlls))
 
 # --- C++ UNIT TESTS (no Godot / no link to phonon; Steam Audio headers only for IPL types in ray tests) ---
-build_tests = ARGUMENTS.get("build_tests", "1") == "1"
+build_tests = ARGUMENTS.get("build_tests", "1") == "1" and env["platform"] != "visionos"
 test_exe = None
 if build_tests:
     env_test = env.Clone()
@@ -147,7 +192,7 @@ if build_tests:
     env_test.Append(CPPPATH=["src", "src/lib/catch2/single_include/catch2", "src/lib/steamaudio/include"])
     # Shared src/ compiled into the GDExtension already land in build_dir; tests use a separate obj tree
     # so SCons does not try to reuse the same .obj with two environments (env vs env_test).
-    test_obj_dir = "build/tests/obj/{}/{}/".format(env["platform"], env["target"])
+    test_obj_dir = "build/tests/obj/{}/".format(env["suffix"].lstrip("."))
     env_test.VariantDir(test_obj_dir, "src", duplicate=0)
     # Paths under build_dir (VariantDir) so .obj files stay in build/, not next to sources in src/.
     test_sources = [

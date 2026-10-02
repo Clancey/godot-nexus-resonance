@@ -49,7 +49,7 @@ Libraries are referenced from GitHub as git submodules, not bundled:
 - **[Catch2](https://github.com/catchorg/Catch2)** - C++ unit tests (branch v2.x)
 - **[pffft](https://github.com/marton78/pffft)** - FFT library (iOS static linking)
 - **[libmysofa](https://github.com/hoene/libmysofa)** - HRTF/SOFA file reader (iOS static linking)
-- **Steam Audio** - Fetched via `install_steam_audio.py` from [ValveSoftware/steam-audio](https://github.com/ValveSoftware/steam-audio) releases
+- **Steam Audio** - Fetched and SHA-256-verified via `install_steam_audio.py` from the [pinned v4.8.1-visionos core SDK](https://github.com/Clancey/steam-audio/releases/tag/v4.8.1-visionos); see [build guidance](DEVELOPERS.md#pinned-sdk-and-release-verification).
 
 ## Running Tests
 
