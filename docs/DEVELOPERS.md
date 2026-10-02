@@ -214,6 +214,12 @@ macOS explicitly builds universal arm64 + x86_64
 `bin/macos/libnexus_resonance.dylib`, alongside the SDK's `libphonon.dylib`.
 `.github/scripts/test_macos_addon.sh` verifies native headless Godot loading and
 playback-owner teardown; set `GODOT` to override the executable.
+The check isolates HOME to exercise a cold editor cache. With Godot 4.7.2,
+immediate `--import` exit can crash during deferred extension documentation
+generation; the check uses `--import --quit-after 60` to process editor frames
+before shutdown, followed by a separate runtime lifetime regression. Import
+errors and abnormal exits still fail CI; this does not fix Godot's immediate-exit
+editor behavior.
 
 visionOS requires Xcode's device and simulator SDKs and targets **visionOS 2.0+**.
 The seven bundles under `bin/visionos-xcframeworks/` contain arm64 device and
@@ -435,4 +441,3 @@ All Steam Audio processors (Direct, Reflection, Path, Mixer, Ambisonic) follow a
 | Bake pipeline             | `resonance_baker.cpp`, `editor/resonance_bake_runner.gd`                                                      |
 | Runtime static rebuild    | `resonance_runtime_exporter.gd`, `ResonanceServer` export/replace, `doc_classes/ResonanceRuntimeExporter.xml` |
 | Native node migration     | [docs/adr/001-native-resonance-node-migration.md](adr/001-native-resonance-node-migration.md)                 |
-
