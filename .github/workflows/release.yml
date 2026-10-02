@@ -240,6 +240,14 @@ jobs:
       - name: Verify macOS addon in Godot
         run: bash .github/scripts/test_macos_addon.sh
 
+      - name: Preserve macOS binaries for failure diagnosis
+        if: failure()
+        uses: actions/upload-artifact@v5
+        with:
+          name: macos-diagnostic-binaries
+          path: addons/nexus_resonance/bin/macos/
+          if-no-files-found: ignore
+
       - name: Preserve macOS diagnostics
         if: always()
         uses: actions/upload-artifact@v5

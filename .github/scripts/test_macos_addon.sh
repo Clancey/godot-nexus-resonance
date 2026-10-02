@@ -11,6 +11,11 @@ mkdir -p build/verification
 report_failure() {
     local result=$?
     cat build/verification/macos-*.log >&2
+    if [[ "${GITHUB_ACTIONS:-}" == true ]]; then
+        lldb --batch -o run -o 'thread backtrace all' -- "$GODOT" \
+            --headless --verbose --path "$PROJECT" --editor --import --disable-crash-handler \
+            > build/verification/macos-debugger.log 2>&1 || cat build/verification/macos-debugger.log >&2
+    fi
     exit "$result"
 }
 trap report_failure ERR
@@ -18,7 +23,7 @@ trap report_failure ERR
 "$GODOT" --headless --path "$PROJECT" --editor --import > build/verification/macos-empty-project.log 2>&1
 cp -R addons/nexus_resonance "$PROJECT/addons/"
 cp test/smoke/test_playback_owner_lifetime.gd "$PROJECT/test/smoke/"
-"$GODOT" --headless --path "$PROJECT" --editor --import > build/verification/macos-import.log 2>&1
+"$GODOT" --headless --verbose --path "$PROJECT" --editor --import > build/verification/macos-import.log 2>&1
 "$GODOT" --headless --path "$PROJECT" --script res://test/smoke/test_playback_owner_lifetime.gd \
     > build/verification/macos-lifetime.log 2>&1
 cat build/verification/macos-lifetime.log
