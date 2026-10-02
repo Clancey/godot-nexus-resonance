@@ -184,6 +184,7 @@ if build_tests:
         build_dir + "test/test_pathing_inputs_policy.cpp",
         build_dir + "test/test_pathing_fetch_policy.cpp",
         build_dir + "test/test_source_handle_policy.cpp",
+        build_dir + "test/test_polyphonic_voice_policy.cpp",
         build_dir + "test/test_source_allocation_policy.cpp",
         build_dir + "test/test_static_export_policy.cpp",
         build_dir + "test/test_export_transform_policy.cpp",
@@ -226,6 +227,7 @@ if build_tests:
         build_dir + "test/test_dynamic_transform_queue_policy.cpp",
         build_dir + "test/test_playback_input_started_policy.cpp",
         build_dir + "test/test_playback_host_fade_policy.cpp",
+        build_dir + "test/test_hrtf_rate_policy.cpp",
     ]
     test_dir = "build/tests"
     test_exe = env_test.Program(os.path.join(test_dir, "nexus_resonance_tests"), test_sources)

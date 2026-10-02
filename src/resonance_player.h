@@ -124,6 +124,22 @@ class ResonanceStreamPlayback : public AudioStreamPlayback {
     std::atomic<uintptr_t> retained_ipl_source_{0};
     std::atomic<int32_t> retained_source_handle_{-1};
     int32_t current_source_handle = -1;
+    /// Emitter IPLSource this voice feeds. Voices of one player share it. One effect Applies.
+    std::atomic<int32_t> voice_source_handle_{-1};
+    std::atomic<uint32_t> voice_source_epoch_{0};
+    int32_t get_voice_source_handle() const { return voice_source_handle_.load(std::memory_order_acquire); }
+    uint32_t get_voice_source_epoch() const { return voice_source_epoch_.load(std::memory_order_acquire); }
+    void set_voice_source_binding(int32_t handle, uint32_t epoch) {
+        voice_source_epoch_.store(epoch, std::memory_order_release);
+        voice_source_handle_.store(handle, std::memory_order_release);
+    }
+    /// Audio thread holds this across iplReflectionEffectApply so main can wait before iplSourceRelease.
+    std::atomic<int> convolution_apply_depth_{0};
+    std::atomic<bool> convolution_blocked_{false};
+    bool convolution_try_enter();
+    void convolution_leave();
+    void block_convolution_for_source_release();
+    int convolution_apply_depth() const { return convolution_apply_depth_.load(std::memory_order_acquire); }
     IPLContext context = nullptr;
 
     // --- MODULAR PROCESSORS ---
@@ -277,11 +293,7 @@ class ResonanceStreamPlayback : public AudioStreamPlayback {
     void _lazy_init_steam_audio(int sampling_rate); // Alloc IPL processors/buffers on first need
     void _cleanup_steam_audio();
     void _process_steam_audio_block(); // One `frame_size_` IPL pipeline step
-    float _debug_sa_in_mono_rms() const;
-    bool _feed_convolution_mixer(ResonanceServer* srv, IPLReflectionEffectParams& params, float curr_refl_mix,
-                                 float refl_wet_output_gain, bool store_tail_params, float& out_dbg_reverb);
-    void _apply_reflections_wet(ResonanceServer* srv, float wet_occ, float refl_wet_output_gain,
-                                bool& out_reverb_to_player, float& out_dbg_reverb);
+    void _apply_reflections_wet(ResonanceServer* srv, bool& out_reverb_to_player, float& out_dbg_reverb);
     float _apply_pathing_wet(ResonanceServer* srv, const IPLCoordinateSpace3& listener_cs);
     void _process_passthrough_block();
     void _sync_params(); // Sync parameters from next to current
@@ -461,12 +473,14 @@ class ResonancePlayer : public AudioStreamPlayer3D {
     };
     mutable std::mutex internal_playbacks_mutex_;
     std::vector<ResonanceStreamPlayback*> internal_playbacks_;
+    std::atomic<int> playback_count_{0};
     PlaybackVoiceSnapshot playback_snap_[2];
     std::atomic<int> playback_snap_front_{0};
     void internal_publish_playback_snapshot();
     void internal_get_playback_snapshot_for_audio(PlaybackVoiceSnapshot& out) const;
     void internal_register_playback(ResonanceStreamPlayback* p);
     void internal_unregister_playback(ResonanceStreamPlayback* p);
+    void internal_reclaim_voice_source(int32_t handle, uint32_t epoch);
     void internal_copy_internal_playbacks(std::vector<ResonanceStreamPlayback*>& out) const;
     void _broadcast_update_parameters(const PlaybackParameters& p);
     /// Release playback IPLSource retains before [method ResonanceServer::destroy_source_handle].
@@ -474,8 +488,7 @@ class ResonancePlayer : public AudioStreamPlayer3D {
     /// True when this player's config wants reflections and/or pathing (alloc wet IPL on prewarm).
     bool internal_wants_wet_effects() const;
 
-    /// Shared by all polyphonic voices: one ResonanceServer simulation source per ResonancePlayer.
-    /// Each ResonanceStreamPlayback voice feeds the same IPLSource; spatial params are player-level, not per-voice.
+    /// Idle handle, or the first live voice after one is bound.
     int32_t source_handle = -1;
     /// Captured from ResonanceServer::get_source_lifecycle_epoch() at create; mismatch => stale after reinit.
     uint32_t source_lifecycle_epoch_ = 0;
@@ -580,6 +593,58 @@ class ResonancePlayer : public AudioStreamPlayer3D {
     /// Lazy-create IPL source when server is ready (ordering: nodes before runtime).
     /// Returns true if a new handle was created. Optionally defers playback param push when already playing.
     bool _try_ensure_source_and_sync(ResonanceServer* srv, bool deferred_playback_push_if_playing);
+    int32_t _create_simulation_source(ResonanceServer* srv);
+    /// One IPLSource for this player. Voices bind that handle and do not create another.
+    void _ensure_voice_sources(ResonanceServer* srv);
+    void ensure_shared_reflection_on_main(ResonanceServer* srv);
+    void cleanup_shared_reflection();
+    void reflection_round_enter(ResonanceStreamPlayback* voice);
+    void reflection_round_add(ResonanceStreamPlayback* voice);
+    void reflection_round_leave(ResonanceStreamPlayback* voice);
+    bool reflection_try_apply(ResonanceStreamPlayback* voice, bool& out_reverb_to_player, float& out_dbg_reverb);
+    bool shared_reflection_is_parametric() const;
+    IPLAudioBuffer* shared_reflection_direct_output();
+    void _zero_shared_reflection_accum();
+    void _collect_simulation_source_handles(std::vector<int32_t>& out) const;
+    bool _live_voice_uses_source(int32_t handle) const;
+    int32_t _first_live_voice_source(uint32_t* out_epoch) const;
+    void _drain_voice_source_reclaims(bool keep_idle);
+    void _reclaim_voice_source_on_main(int32_t handle, uint32_t epoch, bool keep_idle);
+    void _destroy_owned_sources_for_shutdown();
+    void _block_live_convolution_and_wait();
+    struct PendingVoiceSourceReclaim {
+        int32_t handle = -1;
+        uint32_t epoch = 0;
+    };
+    std::mutex voice_source_reclaim_mutex_;
+    std::vector<PendingVoiceSourceReclaim> voice_source_reclaims_;
+    /// One convolution effect for every voice of this emitter. New plays must not reset it.
+    ResonanceReflectionProcessor shared_reflection_;
+    IPLAudioBuffer shared_refl_accum_{};
+    IPLContext shared_refl_context_ = nullptr;
+    int shared_refl_frame_size_ = 0;
+    bool shared_reflection_inited_ = false;
+    float shared_prev_conv_mix_ = 0.0f;
+    float shared_prev_param_mix_ = 0.0f;
+    IPLReflectionEffectParams shared_tail_params_{};
+    bool shared_tail_have_ = false;
+    int32_t shared_tail_source_ = -1;
+    uint32_t shared_tail_ir_gen_ = 0;
+    static constexpr int kReflectionRoundVoices = 64;
+    ResonanceStreamPlayback* refl_round_voices_[kReflectionRoundVoices] = {};
+    int refl_round_seen_ = 0;
+    int refl_round_expected_ = 0;
+    bool refl_round_applied_ = false;
+    bool refl_round_have_dry_ = false;
+    ResonanceStreamPlayback* refl_round_closer_ = nullptr;
+    int32_t refl_apply_reader_ = -1;
+    float refl_round_wet_occ_ = 1.0f;
+    float refl_round_mix_ = 1.0f;
+    bool refl_round_air_ = false;
+    resonance::AudioBands3 refl_round_air_bands_{1.0f, 1.0f, 1.0f};
+    float refl_round_eq_[3] = {1.0f, 1.0f, 1.0f};
+    int refl_round_delay_ = -1;
+    std::vector<int32_t> attenuation_callback_handles_;
     void _deferred_try_ensure_source_after_config();
     void _start_reverb_split_child_if_needed();
     bool warned_source_handle_create_failed_ = false;

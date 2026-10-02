@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Default HRTF sample rate** - The embedded default HRTF accepts only 24000, 44100, and 48000 Hz; an unsupported host mix rate such as 96000 reports that explicitly instead of the SOFA SimpleFreeFieldHRIR message.
+- **One source per ResonancePlayer** - Restarting a short stream on a timer before the previous play finishes no longer overlaps or cuts the reflection. Overlapping voices of one ResonancePlayer sum their dry audio into one `iplReflectionEffectApply` on that player's single IPLSource. A new voice does not reset the effect, so the older tail keeps ringing. The first play keeps its attack samples until the reflection IR exists. One source IR has one reader, so a second reflection effect cannot drop the tail or crash inside `iplReflectionEffectApply`.
+
 ## [1.1.0] - 2026-09-17
 
 ### Added

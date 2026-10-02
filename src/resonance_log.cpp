@@ -49,14 +49,21 @@ void copy_trunc(char* dst, size_t cap, const char* src) {
     dst[cap - 1] = '\0';
 }
 
+String prefix_log_line(const String& body) {
+    // Callers sometimes pass a body that already starts with this prefix.
+    if (body.begins_with("Nexus Resonance: "))
+        return body;
+    return String("Nexus Resonance: ") + body;
+}
+
 void emit_on_main(PostedLevel level, const char* category, const char* text) {
     const char* cat = (category && category[0]) ? category : "log";
     const char* body = (text && text[0]) ? text : "";
-    String full_msg = String("Nexus Resonance: ") + String(body);
+    String full_msg = prefix_log_line(String(body));
 
     switch (level) {
     case PostedLevel::Info:
-        UtilityFunctions::print("Nexus Resonance: ", String(body));
+        UtilityFunctions::print(full_msg);
         resonance_logger_log(cat, full_msg.utf8().get_data(), Dictionary());
         break;
     case PostedLevel::Warn:
@@ -139,19 +146,17 @@ void ResonanceLog::set_level(LogLevel p_level) {
 
 void ResonanceLog::info(const String& p_msg) {
     if (current_level >= LEVEL_INFO) {
-        String full_msg = "Nexus Resonance: " + p_msg;
         if (!on_main_thread())
-            std::cout << full_msg.utf8().get_data() << std::endl;
-        log_utf8(PostedLevel::Info, "init", full_msg.utf8().get_data());
+            std::cout << prefix_log_line(p_msg).utf8().get_data() << std::endl;
+        log_utf8(PostedLevel::Info, "init", p_msg.utf8().get_data());
     }
 }
 
 void ResonanceLog::warn(const String& p_msg) {
     if (current_level >= LEVEL_WARN) {
-        String full_msg = "Nexus Resonance: " + p_msg;
         if (!on_main_thread())
-            std::cout << full_msg.utf8().get_data() << std::endl;
-        log_utf8(PostedLevel::Warn, "warn", full_msg.utf8().get_data());
+            std::cout << prefix_log_line(p_msg).utf8().get_data() << std::endl;
+        log_utf8(PostedLevel::Warn, "warn", p_msg.utf8().get_data());
     }
 }
 
@@ -166,10 +171,9 @@ void ResonanceLog::warn_cstr(const char* p_msg) {
 
 void ResonanceLog::error(const String& p_msg) {
     if (current_level >= LEVEL_ERROR) {
-        String full_msg = "Nexus Resonance: " + p_msg;
         if (!on_main_thread())
-            std::cerr << full_msg.utf8().get_data() << std::endl;
-        log_utf8(PostedLevel::Error, "error", full_msg.utf8().get_data());
+            std::cerr << prefix_log_line(p_msg).utf8().get_data() << std::endl;
+        log_utf8(PostedLevel::Error, "error", p_msg.utf8().get_data());
     }
 }
 

@@ -4,6 +4,7 @@
 #include "resonance_log.h"
 #include "resonance_math.h"
 #include "resonance_pathing_inputs_policy.h"
+#include "resonance_polyphonic_voice_policy.h"
 #include "resonance_server.h"
 #include "resonance_sim_distance_attenuation_policy.h"
 #include "resonance_source_handle_policy.h"
@@ -64,14 +65,20 @@ void fill_baked_reflection_identifier(IPLSimulationInputs& inputs, int baked_dat
 // IPL source handles: main-thread create/destroy queue real Add/Remove/Commit on the worker. Updates batch here and flush
 // from ResonanceRuntime; try_update_source can bypass the queue when simulation_mutex is available.
 
+bool ResonanceServer::simulation_source_cap_blocks_create() const {
+    return simulation_source_cap_error_emitted_ &&
+           resonance::source_count_at_simulation_limit(source_manager.size_approx(), max_simulation_sources);
+}
+
 int32_t ResonanceServer::create_source_handle(Vector3 pos, float radius, const String& pathing_owner_path,
                                               int pathing_enabled_override) {
     if (!_ctx() || !simulator)
         return -1;
-    if (resonance::source_count_at_simulation_limit(source_manager.size_approx(), max_simulation_sources)) {
-        ResonanceLog::error("ResonanceServer: max_simulation_sources exceeded (create_source_handle).");
+    if (resonance::reject_simulation_source_create_at_cap(
+            source_manager.size_approx(), max_simulation_sources, simulation_source_cap_error_emitted_, [] {
+                ResonanceLog::error("ResonanceServer: max_simulation_sources exceeded (create_source_handle).");
+            }))
         return -1;
-    }
     IPLSourceSettings settings{};
     // Sources are created with Pathing capacity; per-source SetInputs gates RunPathing.
     settings.flags = static_cast<IPLSimulationFlags>(IPL_SIMULATIONFLAGS_DIRECT | IPL_SIMULATIONFLAGS_REFLECTIONS |
@@ -91,6 +98,7 @@ int32_t ResonanceServer::create_source_handle(Vector3 pos, float radius, const S
         pathing_enabled_override, pathing_enabled, output_reverb_enabled.load(std::memory_order_acquire));
     if (handle < kMaxCacheHandles) {
         // Block audio fetch before wiping recycled-handle cache slots.
+        _retire_reflection_ir_for_handle(handle);
         source_attach_pending_[static_cast<size_t>(handle)].store(1, std::memory_order_release);
         for (int slot = 0; slot < kCacheSlots; slot++) {
             occlusion_cache_[static_cast<size_t>(slot)][static_cast<size_t>(handle)].epoch = 0;
@@ -162,9 +170,28 @@ void ResonanceServer::_destroy_source_handle_under_simulation_lock(int32_t handl
     source_manager.remove_source(handle);
 }
 
+void ResonanceServer::_retire_reflection_ir_for_handle(int32_t handle) {
+    if (handle < 0 || handle >= kMaxCacheHandles)
+        return;
+    source_ir_generation_[static_cast<size_t>(handle)].fetch_add(1u, std::memory_order_acq_rel);
+    for (int slot = 0; slot < kCacheSlots; slot++) {
+        reflection_param_cache_[static_cast<size_t>(slot)][static_cast<size_t>(handle)].params.ir = nullptr;
+        reflection_param_cache_[static_cast<size_t>(slot)][static_cast<size_t>(handle)].ir_generation = 0;
+    }
+    last_good_reflection_params_[static_cast<size_t>(handle)].ir = nullptr;
+    last_good_reflection_valid_[static_cast<size_t>(handle)].store(0, std::memory_order_release);
+}
+
+uint32_t ResonanceServer::get_source_ir_generation(int32_t handle) const {
+    if (handle < 0 || handle >= kMaxCacheHandles)
+        return 0u;
+    return source_ir_generation_[static_cast<size_t>(handle)].load(std::memory_order_acquire);
+}
+
 void ResonanceServer::destroy_source_handle(int32_t handle) {
     if (handle < 0 || is_shutting_down_flag.load(std::memory_order_acquire) || !_ctx())
         return;
+    _retire_reflection_ir_for_handle(handle);
     // Invalidate handle on this thread immediately; worker finishes Remove + Commit + final Release.
     IPLSource src = source_manager.get_source(handle); // retains
     // Defer handle recycle until worker post-remove (or until a cancelled pending-add path recycles
@@ -219,7 +246,6 @@ void ResonanceServer::destroy_source_handle(int32_t handle) {
     {
         std::lock_guard<std::mutex> o(source_pathing_owner_mutex_);
         source_pathing_owner_path_.erase(handle);
-        pathing_batch_resolve_warned_.erase(handle);
     }
     _wake_phonon_worker_for_lifecycle();
 }

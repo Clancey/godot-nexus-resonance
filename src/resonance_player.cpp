@@ -6,7 +6,9 @@
 #include "resonance_math.h"
 #include "resonance_playback_lod_policy.h"
 #include "resonance_player_debug_hud_policy.h"
+#include "resonance_polyphonic_voice_policy.h"
 #include "resonance_probe_volume.h"
+#include "resonance_reflection_fetch_policy.h"
 #include "resonance_server.h"
 #include "resonance_soft_stop_watchdog_policy.h"
 #include "resonance_source_handle_policy.h"
@@ -38,6 +40,11 @@
 #include <godot_cpp/variant/vector4.hpp>
 #include <limits>
 #include <sstream>
+#include <thread>
+
+namespace {
+thread_local int tls_convolution_apply_depth = 0;
+} // namespace
 
 using namespace godot;
 
@@ -102,9 +109,43 @@ ResonanceStreamPlayback::ResonanceStreamPlayback() {
 }
 
 ResonanceStreamPlayback::~ResonanceStreamPlayback() {
-    if (owner_player_)
-        owner_player_->internal_unregister_playback(this);
+    // Stop new Apply calls, then wait out any in-flight one before releasing the effect and the source.
+    convolution_blocked_.store(true, std::memory_order_release);
+    const int32_t handle = voice_source_handle_.exchange(-1, std::memory_order_acq_rel);
+    const uint32_t epoch = voice_source_epoch_.exchange(0, std::memory_order_acq_rel);
+    ResonancePlayer* owner = owner_player_;
+    if (owner)
+        owner->internal_unregister_playback(this);
+    // The applying thread must not wait on itself. Main waits until that Apply returns.
+    if (tls_convolution_apply_depth == 0) {
+        while (convolution_apply_depth_.load(std::memory_order_acquire) > 0)
+            std::this_thread::yield();
+    }
     _cleanup_steam_audio();
+    if (owner && handle >= 0)
+        owner->internal_reclaim_voice_source(handle, epoch);
+}
+
+bool ResonanceStreamPlayback::convolution_try_enter() {
+    if (convolution_blocked_.load(std::memory_order_acquire))
+        return false;
+    convolution_apply_depth_.fetch_add(1, std::memory_order_acq_rel);
+    if (convolution_blocked_.load(std::memory_order_acquire)) {
+        convolution_apply_depth_.fetch_sub(1, std::memory_order_acq_rel);
+        return false;
+    }
+    tls_convolution_apply_depth += 1;
+    return true;
+}
+
+void ResonanceStreamPlayback::convolution_leave() {
+    if (tls_convolution_apply_depth > 0)
+        tls_convolution_apply_depth -= 1;
+    convolution_apply_depth_.fetch_sub(1, std::memory_order_acq_rel);
+}
+
+void ResonanceStreamPlayback::block_convolution_for_source_release() {
+    convolution_blocked_.store(true, std::memory_order_release);
 }
 
 void ResonanceStreamPlayback::ipl_context_reinit_cleanup(void* userdata) {
@@ -163,7 +204,7 @@ void ResonanceStreamPlayback::_start(double from_pos) {
     prev_conv_reflections_mix_level_ = 0.0f;
     prev_parametric_reflections_mix_level_ = 0.0f;
     prev_pathing_mix_level_ = 0.0f;
-    reflection_processor.reset_effect();
+    // The shared emitter effect holds the tail. Resetting it here would cut the previous voice.
     path_processor.reset_effect();
     reflection_tail_have_params_ = false;
     reflection_tail_param_epoch_ = 0;
@@ -459,18 +500,7 @@ void ResonancePlayer::_exit_tree() {
     AudioStreamPlayer3D::stop();
     debug_drawer.cleanup();
     directivity_drawer_.cleanup();
-
-    if (source_handle >= 0) {
-        _detach_playback_source_retains();
-        ResonanceServer* srv = ResonanceServer::get_singleton();
-        // Only destroy if this handle still belongs to this player's lifecycle epoch.
-        // After reinit, IDs are recycled; destroying a recycled ID would free another player's source.
-        if (srv && !ResonanceServer::is_shutting_down() &&
-            resonance::source_handle_matches_lifecycle_epoch(source_handle, source_lifecycle_epoch_, srv->get_source_lifecycle_epoch()))
-            srv->destroy_source_handle(source_handle);
-        source_handle = -1;
-        source_lifecycle_epoch_ = 0;
-    }
+    _destroy_owned_sources_for_shutdown();
 }
 
 ResonancePlayer::~ResonancePlayer() {
@@ -515,6 +545,7 @@ void ResonancePlayer::internal_register_playback(ResonanceStreamPlayback* p) {
                 return;
         }
         internal_playbacks_.push_back(p);
+        playback_count_.fetch_add(1, std::memory_order_release);
     }
     internal_publish_playback_snapshot();
 }
@@ -524,9 +555,22 @@ void ResonancePlayer::internal_unregister_playback(ResonanceStreamPlayback* p) {
         return;
     {
         std::lock_guard<std::mutex> lock(internal_playbacks_mutex_);
+        const size_t before = internal_playbacks_.size();
         internal_playbacks_.erase(std::remove(internal_playbacks_.begin(), internal_playbacks_.end(), p), internal_playbacks_.end());
+        if (internal_playbacks_.size() < before)
+            playback_count_.fetch_sub(1, std::memory_order_release);
     }
     internal_publish_playback_snapshot();
+}
+
+void ResonancePlayer::internal_reclaim_voice_source(int32_t handle, uint32_t epoch) {
+    if (handle < 0)
+        return;
+    std::lock_guard<std::mutex> lock(voice_source_reclaim_mutex_);
+    PendingVoiceSourceReclaim item;
+    item.handle = handle;
+    item.epoch = epoch;
+    voice_source_reclaims_.push_back(item);
 }
 
 void ResonancePlayer::internal_copy_internal_playbacks(std::vector<ResonanceStreamPlayback*>& out) const {
@@ -551,9 +595,29 @@ void ResonancePlayer::_broadcast_update_parameters(const PlaybackParameters& p) 
         std::lock_guard<std::mutex> lock(internal_playbacks_mutex_);
         copy = internal_playbacks_;
     }
+    ResonanceServer* srv = ResonanceServer::get_singleton();
     for (ResonanceStreamPlayback* pb : copy) {
-        if (pb)
-            pb->update_parameters(p);
+        if (!pb)
+            continue;
+        PlaybackParameters voice = p;
+        if (p.source_handle >= 0) {
+            const int32_t owned = pb->get_voice_source_handle();
+            // A voice with no bound handle must not Apply the player template source.
+            if (owned >= 0) {
+                voice.source_handle = owned;
+                if (srv && srv->is_initialized()) {
+                    IPLReflectionEffectParams ignored{};
+                    bool has_reverb = srv->peek_reverb_params_likely_available(owned);
+                    if (!has_reverb)
+                        has_reverb = srv->fetch_reverb_params(owned, ignored);
+                    voice.has_valid_reverb = has_reverb;
+                }
+            } else {
+                voice.source_handle = -1;
+                voice.has_valid_reverb = false;
+            }
+        }
+        pb->update_parameters(voice);
     }
 }
 
@@ -763,6 +827,7 @@ void ResonancePlayer::_process(double delta) {
         return;
     if (!player_config.is_valid())
         return;
+    _drain_voice_source_reclaims(true);
 
     {
         std::vector<ResonanceStreamPlayback*> resolve_voices;
@@ -906,6 +971,16 @@ void ResonancePlayer::_process(double delta) {
     _sync_playback_simulation_frame(delta, srv, show_debug_hud);
 }
 
+int32_t ResonancePlayer::_create_simulation_source(ResonanceServer* srv) {
+    if (!srv || !srv->is_initialized())
+        return -1;
+    if (srv->simulation_source_cap_blocks_create())
+        return -1;
+    const float eff_radius = _config_float("source_radius", 1.0f);
+    const int pathing_override = _config_int("pathing_enabled_override", -1);
+    return srv->create_source_handle(get_global_position(), eff_radius, get_path(), pathing_override);
+}
+
 bool ResonancePlayer::_try_ensure_source_and_sync(ResonanceServer* srv, bool deferred_playback_push_if_playing) {
     _invalidate_source_handle_if_stale(srv);
     if (!player_config.is_valid() || source_handle >= 0)
@@ -913,11 +988,9 @@ bool ResonancePlayer::_try_ensure_source_and_sync(ResonanceServer* srv, bool def
     if (!srv || !srv->is_initialized())
         return false;
 
-    const float eff_radius = _config_float("source_radius", 1.0f);
-    const int pathing_override = _config_int("pathing_enabled_override", -1);
-    const int32_t h = srv->create_source_handle(get_global_position(), eff_radius, get_path(), pathing_override);
+    const int32_t h = _create_simulation_source(srv);
     if (h < 0) {
-        if (!warned_source_handle_create_failed_) {
+        if (!warned_source_handle_create_failed_ && !srv->simulation_source_cap_blocks_create()) {
             warned_source_handle_create_failed_ = true;
             ResonanceLog::warn(
                 "ResonancePlayer: create_source_handle failed (is the simulator ready?). Reverb/occlusion may stay dry until it succeeds.");
@@ -928,21 +1001,464 @@ bool ResonancePlayer::_try_ensure_source_and_sync(ResonanceServer* srv, bool def
     source_handle = h;
     source_lifecycle_epoch_ = srv->get_source_lifecycle_epoch();
     attenuation_setup_cache_.valid = false;
+    attenuation_callback_handles_.clear();
     _prepare_source_for_simulation(srv);
     if (deferred_playback_push_if_playing && is_playing())
         call_deferred("_deferred_push_playback_parameters");
     return true;
 }
 
-void ResonancePlayer::_invalidate_source_handle_if_stale(ResonanceServer* srv) {
-    if (source_handle < 0)
+void ResonancePlayer::_collect_simulation_source_handles(std::vector<int32_t>& out) const {
+    out.clear();
+    std::vector<ResonanceStreamPlayback*> voices;
+    internal_copy_internal_playbacks(voices);
+    for (ResonanceStreamPlayback* pb : voices) {
+        if (!pb)
+            continue;
+        const int32_t h = pb->get_voice_source_handle();
+        if (h < 0)
+            continue;
+        bool seen = false;
+        for (int32_t existing : out) {
+            if (existing == h) {
+                seen = true;
+                break;
+            }
+        }
+        if (!seen)
+            out.push_back(h);
+    }
+    if (out.empty() && source_handle >= 0)
+        out.push_back(source_handle);
+}
+
+bool ResonancePlayer::_live_voice_uses_source(int32_t handle) const {
+    if (handle < 0)
+        return false;
+    std::vector<ResonanceStreamPlayback*> voices;
+    internal_copy_internal_playbacks(voices);
+    for (ResonanceStreamPlayback* pb : voices) {
+        if (pb && pb->get_voice_source_handle() == handle)
+            return true;
+    }
+    return false;
+}
+
+int32_t ResonancePlayer::_first_live_voice_source(uint32_t* out_epoch) const {
+    if (out_epoch)
+        *out_epoch = 0;
+    std::vector<ResonanceStreamPlayback*> voices;
+    internal_copy_internal_playbacks(voices);
+    for (ResonanceStreamPlayback* pb : voices) {
+        if (!pb)
+            continue;
+        const int32_t h = pb->get_voice_source_handle();
+        if (h < 0)
+            continue;
+        if (out_epoch)
+            *out_epoch = pb->get_voice_source_epoch();
+        return h;
+    }
+    return -1;
+}
+
+void ResonancePlayer::_reclaim_voice_source_on_main(int32_t handle, uint32_t epoch, bool keep_idle) {
+    if (handle < 0)
         return;
-    const uint32_t server_epoch = srv ? srv->get_source_lifecycle_epoch() : 0u;
-    if (resonance::source_handle_matches_lifecycle_epoch(source_handle, source_lifecycle_epoch_, server_epoch))
+    if (_live_voice_uses_source(handle))
         return;
+    uint32_t live_epoch = 0;
+    const int32_t live = _first_live_voice_source(&live_epoch);
+    if (keep_idle && live < 0 && (source_handle < 0 || source_handle == handle)) {
+        source_handle = handle;
+        source_lifecycle_epoch_ = epoch;
+        return;
+    }
+    if (source_handle == handle) {
+        source_handle = live;
+        source_lifecycle_epoch_ = live >= 0 ? live_epoch : 0;
+    }
+    ResonanceServer* srv = ResonanceServer::get_singleton();
+    if (!srv || ResonanceServer::is_shutting_down())
+        return;
+    if (!resonance::source_handle_matches_lifecycle_epoch(handle, epoch, srv->get_source_lifecycle_epoch()))
+        return;
+    srv->destroy_source_handle(handle);
+}
+
+void ResonancePlayer::_drain_voice_source_reclaims(bool keep_idle) {
+    std::vector<PendingVoiceSourceReclaim> local;
+    {
+        std::lock_guard<std::mutex> lock(voice_source_reclaim_mutex_);
+        local.swap(voice_source_reclaims_);
+    }
+    for (const PendingVoiceSourceReclaim& item : local)
+        _reclaim_voice_source_on_main(item.handle, item.epoch, keep_idle);
+}
+
+void ResonancePlayer::_block_live_convolution_and_wait() {
+    std::vector<ResonanceStreamPlayback*> voices;
+    internal_copy_internal_playbacks(voices);
+    for (ResonanceStreamPlayback* pb : voices) {
+        if (pb)
+            pb->block_convolution_for_source_release();
+    }
+    for (ResonanceStreamPlayback* pb : voices) {
+        if (!pb)
+            continue;
+        while (pb->convolution_apply_depth() > 0)
+            std::this_thread::yield();
+    }
+}
+
+void ResonancePlayer::_destroy_owned_sources_for_shutdown() {
+    _block_live_convolution_and_wait();
+    cleanup_shared_reflection();
     _detach_playback_source_retains();
+    std::vector<PendingVoiceSourceReclaim> doomed;
+    if (source_handle >= 0) {
+        PendingVoiceSourceReclaim idle;
+        idle.handle = source_handle;
+        idle.epoch = source_lifecycle_epoch_;
+        doomed.push_back(idle);
+    }
+    std::vector<ResonanceStreamPlayback*> voices;
+    internal_copy_internal_playbacks(voices);
+    for (ResonanceStreamPlayback* pb : voices) {
+        if (!pb)
+            continue;
+        PendingVoiceSourceReclaim item;
+        item.handle = pb->get_voice_source_handle();
+        item.epoch = pb->get_voice_source_epoch();
+        pb->set_voice_source_binding(-1, 0);
+        if (item.handle >= 0)
+            doomed.push_back(item);
+    }
+    {
+        std::lock_guard<std::mutex> lock(voice_source_reclaim_mutex_);
+        for (const PendingVoiceSourceReclaim& item : voice_source_reclaims_)
+            doomed.push_back(item);
+        voice_source_reclaims_.clear();
+    }
     source_handle = -1;
     source_lifecycle_epoch_ = 0;
+    attenuation_callback_handles_.clear();
+    ResonanceServer* srv = ResonanceServer::get_singleton();
+    if (!srv || ResonanceServer::is_shutting_down())
+        return;
+    const uint32_t server_epoch = srv->get_source_lifecycle_epoch();
+    std::vector<int32_t> destroyed;
+    for (const PendingVoiceSourceReclaim& item : doomed) {
+        if (item.handle < 0)
+            continue;
+        bool seen = false;
+        for (int32_t prev : destroyed) {
+            if (prev == item.handle) {
+                seen = true;
+                break;
+            }
+        }
+        if (seen)
+            continue;
+        destroyed.push_back(item.handle);
+        if (resonance::source_handle_matches_lifecycle_epoch(item.handle, item.epoch, server_epoch))
+            srv->destroy_source_handle(item.handle);
+    }
+}
+
+void ResonancePlayer::_zero_shared_reflection_accum() {
+    if (!shared_refl_accum_.data || shared_refl_frame_size_ <= 0)
+        return;
+    for (int c = 0; c < shared_refl_accum_.numChannels; ++c) {
+        if (shared_refl_accum_.data[c])
+            memset(shared_refl_accum_.data[c], 0, static_cast<size_t>(shared_refl_frame_size_) * sizeof(float));
+    }
+}
+
+void ResonancePlayer::cleanup_shared_reflection() {
+    shared_reflection_.cleanup();
+    if (shared_refl_context_ && shared_refl_accum_.data)
+        iplAudioBufferFree(shared_refl_context_, &shared_refl_accum_);
+    memset(&shared_refl_accum_, 0, sizeof(shared_refl_accum_));
+    shared_refl_context_ = nullptr;
+    shared_refl_frame_size_ = 0;
+    shared_reflection_inited_ = false;
+    shared_tail_have_ = false;
+    shared_tail_source_ = -1;
+    shared_tail_ir_gen_ = 0;
+    refl_round_seen_ = 0;
+    refl_round_closer_ = nullptr;
+    refl_apply_reader_ = -1;
+}
+
+void ResonancePlayer::ensure_shared_reflection_on_main(ResonanceServer* srv) {
+    if (!srv || !srv->is_initialized())
+        return;
+    if (!internal_wants_wet_effects())
+        return;
+    IPLContext ctx = srv->get_context_handle();
+    const int frame = srv->get_audio_frame_size();
+    if (shared_reflection_inited_ && shared_refl_context_ == ctx && shared_refl_frame_size_ == frame)
+        return;
+    cleanup_shared_reflection();
+    if (!ctx || frame <= 0)
+        return;
+    shared_reflection_.initialize(ctx, srv->get_sample_rate(), frame, srv->get_ambisonic_order(), srv->get_reflection_type(),
+                                  srv->get_realtime_simulation_duration(), srv->get_convolution_ir_max_samples());
+    if (iplAudioBufferAllocate(ctx, 2, frame, &shared_refl_accum_) != IPL_STATUS_SUCCESS) {
+        shared_reflection_.cleanup();
+        return;
+    }
+    shared_refl_context_ = ctx;
+    shared_refl_frame_size_ = frame;
+    shared_reflection_inited_ = true;
+}
+
+bool ResonancePlayer::shared_reflection_is_parametric() const {
+    return shared_reflection_inited_ && shared_reflection_.is_parametric();
+}
+
+IPLAudioBuffer* ResonancePlayer::shared_reflection_direct_output() {
+    if (!shared_reflection_inited_)
+        return nullptr;
+    return shared_reflection_.get_direct_output_buffer();
+}
+
+void ResonancePlayer::reflection_round_enter(ResonanceStreamPlayback* voice) {
+    if (!voice)
+        return;
+    // A voice showing up twice means the previous callback never reached its expected count.
+    // Close that round so a missing playback cannot stall the single Apply forever.
+    bool repeat = false;
+    const int seen_before = std::min(refl_round_seen_, kReflectionRoundVoices);
+    for (int i = 0; i < seen_before; ++i) {
+        if (refl_round_voices_[i] == voice) {
+            repeat = true;
+            break;
+        }
+    }
+    if (repeat) {
+        if (!refl_round_applied_) {
+            bool to_player = false;
+            float dbg = 0.0f;
+            if (!refl_round_closer_)
+                refl_round_closer_ = voice;
+            reflection_try_apply(refl_round_closer_, to_player, dbg);
+        }
+        refl_round_seen_ = 0;
+        refl_round_closer_ = nullptr;
+    }
+    if (refl_round_seen_ == 0) {
+        const int n = playback_count_.load(std::memory_order_acquire);
+        refl_round_expected_ = n > 0 ? n : 1;
+        refl_round_applied_ = false;
+        refl_round_have_dry_ = false;
+        refl_round_closer_ = nullptr;
+        refl_apply_reader_ = -1;
+        refl_round_mix_ = 1.0f;
+        refl_round_wet_occ_ = 1.0f;
+        refl_round_air_ = false;
+        refl_round_eq_[0] = 1.0f;
+        refl_round_eq_[1] = 1.0f;
+        refl_round_eq_[2] = 1.0f;
+        refl_round_delay_ = -1;
+        _zero_shared_reflection_accum();
+    }
+    if (refl_round_seen_ < kReflectionRoundVoices)
+        refl_round_voices_[refl_round_seen_] = voice;
+    refl_round_seen_ += 1;
+    if (refl_round_seen_ >= refl_round_expected_)
+        refl_round_closer_ = voice;
+}
+
+void ResonancePlayer::reflection_round_add(ResonanceStreamPlayback* voice) {
+    if (!voice || !shared_reflection_inited_ || !shared_refl_accum_.data)
+        return;
+    if (!voice->params_current.enable_reverb)
+        return;
+    if (source_handle < 0 || voice->get_voice_source_handle() != source_handle)
+        return;
+    const int n = std::min(shared_refl_frame_size_, voice->frame_size_);
+    if (n <= 0 || !voice->sa_in_buffer.data)
+        return;
+    const int channels = std::min(shared_refl_accum_.numChannels, voice->sa_in_buffer.numChannels);
+    for (int c = 0; c < channels; ++c) {
+        float* dst = shared_refl_accum_.data[c];
+        float* src = voice->sa_in_buffer.data[c];
+        if (!dst || !src)
+            continue;
+        for (int i = 0; i < n; ++i)
+            dst[i] = resonance::sanitize_audio_float(dst[i] + src[i]);
+    }
+    refl_round_have_dry_ = true;
+    refl_round_wet_occ_ = voice->params_current.wet_occlusion_factor;
+    refl_round_mix_ = voice->params_current.reflections_mix_level;
+    refl_round_air_ = voice->params_current.apply_air_absorption_to_wet;
+    refl_round_air_bands_ = voice->params_current.air_absorption;
+    refl_round_eq_[0] = voice->params_current.reflections_eq[0];
+    refl_round_eq_[1] = voice->params_current.reflections_eq[1];
+    refl_round_eq_[2] = voice->params_current.reflections_eq[2];
+    refl_round_delay_ = voice->params_current.reflections_delay;
+}
+
+bool ResonancePlayer::reflection_try_apply(ResonanceStreamPlayback* voice, bool& out_reverb_to_player, float& out_dbg_reverb) {
+    if (!voice || voice != refl_round_closer_ || refl_round_applied_)
+        return false;
+    refl_round_applied_ = true;
+    out_reverb_to_player = false;
+    out_dbg_reverb = 0.0f;
+    if (!shared_reflection_inited_ || source_handle < 0)
+        return false;
+    if (!voice->params_current.enable_reverb && !refl_round_have_dry_)
+        return false;
+    if (!resonance::claim_reflection_apply(&refl_apply_reader_, resonance::kEmitterReflectionReader))
+        return false;
+
+    ResonanceServer* srv = ResonanceServer::get_singleton();
+    if (!srv || !srv->is_initialized()) {
+        refl_apply_reader_ = -1;
+        return false;
+    }
+    IPLReflectionEffectParams params{};
+    const bool fetched = srv->fetch_reverb_params(source_handle, params, nullptr);
+    if (!fetched) {
+        const uint32_t live_gen = srv->get_source_ir_generation(source_handle);
+        if (!shared_tail_have_ || !resonance::voice_tail_ir_matches_source(shared_tail_source_, source_handle) ||
+            !resonance::voice_reflection_ir_generation_live(shared_tail_ir_gen_, live_gen)) {
+            refl_apply_reader_ = -1;
+            return false;
+        }
+        params = shared_tail_params_;
+    }
+    const int refl_type = srv->get_reflection_type();
+    const float wet_occ = resonance::sanitize_audio_float(refl_round_wet_occ_);
+    const float curr_mix = resonance::sanitize_audio_float(resonance::conv_reflection_wet_mix_level(refl_round_mix_, wet_occ));
+    bool fed = false;
+    if (!voice->convolution_try_enter()) {
+        refl_apply_reader_ = -1;
+        return false;
+    }
+    if (refl_type == resonance::kReflectionConvolution || refl_type == resonance::kReflectionTan) {
+        auto mixer_guard = srv->scoped_mixer_read();
+        IPLReflectionMixer mixer = mixer_guard.get();
+        if (mixer && shared_refl_accum_.data) {
+            fed = shared_reflection_.process_mix(shared_refl_accum_, params, mixer, shared_prev_conv_mix_, curr_mix, 1.0f, refl_round_air_,
+                                                 refl_round_air_bands_);
+            if (fed) {
+                shared_prev_conv_mix_ = curr_mix;
+                srv->record_mixer_feed();
+                out_dbg_reverb = curr_mix;
+            }
+        }
+    } else {
+        if (refl_type == resonance::kReflectionHybrid) {
+            if (refl_round_eq_[0] != 1.0f || refl_round_eq_[1] != 1.0f || refl_round_eq_[2] != 1.0f) {
+                params.eq[0] *= refl_round_eq_[0];
+                params.eq[1] *= refl_round_eq_[1];
+                params.eq[2] *= refl_round_eq_[2];
+            }
+            if (refl_round_delay_ >= 0)
+                params.delay = refl_round_delay_;
+        }
+        const float parametric_mix = resonance::sanitize_audio_float(refl_round_mix_ * wet_occ);
+        fed = shared_reflection_.process_mix_direct(shared_refl_accum_, params, shared_prev_param_mix_, parametric_mix, refl_round_air_,
+                                                    refl_round_air_bands_);
+        if (fed) {
+            shared_prev_param_mix_ = parametric_mix;
+            out_reverb_to_player = true;
+            out_dbg_reverb = parametric_mix;
+        }
+    }
+    voice->convolution_leave();
+    if (fed) {
+        shared_tail_params_ = params;
+        shared_tail_have_ = true;
+        shared_tail_source_ = source_handle;
+        shared_tail_ir_gen_ = srv->get_source_ir_generation(source_handle);
+    }
+    refl_apply_reader_ = -1;
+    return fed;
+}
+
+void ResonancePlayer::reflection_round_leave(ResonanceStreamPlayback* voice) {
+    if (refl_round_seen_ <= 0)
+        return;
+    if (refl_round_seen_ >= refl_round_expected_) {
+        bool to_player = false;
+        float dbg = 0.0f;
+        reflection_try_apply(voice, to_player, dbg);
+        refl_round_seen_ = 0;
+        refl_round_closer_ = nullptr;
+    }
+}
+
+void ResonancePlayer::_ensure_voice_sources(ResonanceServer* srv) {
+    if (!player_config.is_valid() || !srv || !srv->is_initialized())
+        return;
+    _invalidate_source_handle_if_stale(srv);
+    if (source_handle < 0) {
+        const int32_t created = _create_simulation_source(srv);
+        if (created < 0) {
+            if (!warned_source_handle_create_failed_ && !srv->simulation_source_cap_blocks_create()) {
+                warned_source_handle_create_failed_ = true;
+                ResonanceLog::warn(
+                    "ResonancePlayer: create_source_handle failed (is the simulator ready?). Reverb/occlusion may stay dry until it succeeds.");
+            }
+            return;
+        }
+        warned_source_handle_create_failed_ = false;
+        source_handle = created;
+        source_lifecycle_epoch_ = srv->get_source_lifecycle_epoch();
+        attenuation_setup_cache_.valid = false;
+        attenuation_callback_handles_.clear();
+        _prepare_source_for_simulation(srv);
+    }
+
+    std::vector<ResonanceStreamPlayback*> voices;
+    internal_copy_internal_playbacks(voices);
+    for (ResonanceStreamPlayback* pb : voices) {
+        if (!pb)
+            continue;
+        const int32_t previous = pb->get_voice_source_handle();
+        if (previous >= 0 && previous != source_handle) {
+            pb->block_convolution_for_source_release();
+            while (pb->convolution_apply_depth() > 0)
+                std::this_thread::yield();
+            srv->destroy_source_handle(previous);
+        }
+        pb->set_voice_source_binding(source_handle, source_lifecycle_epoch_);
+    }
+    ensure_shared_reflection_on_main(srv);
+}
+
+void ResonancePlayer::_invalidate_source_handle_if_stale(ResonanceServer* srv) {
+    const uint32_t server_epoch = srv ? srv->get_source_lifecycle_epoch() : 0u;
+    bool stale = false;
+    if (source_handle >= 0 &&
+        !resonance::source_handle_matches_lifecycle_epoch(source_handle, source_lifecycle_epoch_, server_epoch))
+        stale = true;
+    std::vector<ResonanceStreamPlayback*> voices;
+    internal_copy_internal_playbacks(voices);
+    for (ResonanceStreamPlayback* pb : voices) {
+        if (!pb)
+            continue;
+        const int32_t h = pb->get_voice_source_handle();
+        if (h < 0)
+            continue;
+        if (!resonance::source_handle_matches_lifecycle_epoch(h, pb->get_voice_source_epoch(), server_epoch))
+            stale = true;
+    }
+    if (!stale)
+        return;
+    _detach_playback_source_retains();
+    for (ResonanceStreamPlayback* pb : voices) {
+        if (pb)
+            pb->set_voice_source_binding(-1, 0);
+    }
+    source_handle = -1;
+    source_lifecycle_epoch_ = 0;
+    attenuation_setup_cache_.valid = false;
+    attenuation_callback_handles_.clear();
 }
 
 void ResonancePlayer::reload_source_after_reinit() {
@@ -952,8 +1468,16 @@ void ResonancePlayer::reload_source_after_reinit() {
     if (!player_config.is_valid())
         return;
     _detach_playback_source_retains();
+    std::vector<ResonanceStreamPlayback*> voices;
+    internal_copy_internal_playbacks(voices);
+    for (ResonanceStreamPlayback* pb : voices) {
+        if (pb)
+            pb->set_voice_source_binding(-1, 0);
+    }
     source_handle = -1;
     source_lifecycle_epoch_ = 0;
+    attenuation_setup_cache_.valid = false;
+    attenuation_callback_handles_.clear();
     ResonanceServer* srv = ResonanceServer::get_singleton();
     _try_ensure_source_and_sync(srv, is_playing());
 }
@@ -1127,7 +1651,6 @@ void ResonancePlayer::play_animation_audio_clip(const Ref<AudioStream>& p_stream
 }
 
 void ResonancePlayer::stop() {
-    warned_source_handle_create_failed_ = false;
     playback_lod_have_anchor_ = false;
     playback_lod_time_since_full_ = 0.0;
     last_pushed_playback_params_valid_ = false;

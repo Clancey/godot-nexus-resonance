@@ -88,3 +88,11 @@ TEST_CASE("EOS hybrid strips stale IR but keeps parametric tail", "[reflection_f
     REQUIRE(fresh.ir != nullptr);
     REQUIRE(fresh.type == IPL_REFLECTIONEFFECTTYPE_HYBRID);
 }
+
+TEST_CASE("decoder waits for the first reflection params so the transient is not consumed", "[reflection_fetch]") {
+    REQUIRE(resonance::reflection_decoder_should_wait_for_first_params(true, true, false, false));
+    REQUIRE_FALSE(resonance::reflection_decoder_should_wait_for_first_params(true, true, true, false));
+    REQUIRE_FALSE(resonance::reflection_decoder_should_wait_for_first_params(true, true, false, true));
+    REQUIRE_FALSE(resonance::reflection_decoder_should_wait_for_first_params(false, true, false, false));
+    REQUIRE_FALSE(resonance::reflection_decoder_should_wait_for_first_params(true, false, false, false));
+}

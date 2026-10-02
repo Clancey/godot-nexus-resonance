@@ -22,6 +22,13 @@ inline bool reflection_stale_epoch_usable_for_mix(int reflection_type, const IPL
     return false;
 }
 
+/// The decoder is consumed before EffectApply. A fetch miss with no tail drops that block, so a short
+/// transient is gone before a new source publishes its first IR. Park the decoder until params exist.
+inline bool reflection_decoder_should_wait_for_first_params(bool enable_reverb, bool voice_may_convolve,
+                                                            bool fetch_ok, bool tail_applyable) {
+    return enable_reverb && voice_may_convolve && !fetch_ok && !tail_applyable;
+}
+
 /// Convolution/TAN mixer feed: reflections_mix_level scaled by baked wet occlusion (same as parametric).
 inline float conv_reflection_wet_mix_level(float reflections_mix_level, float wet_occlusion_factor) {
     return reflections_mix_level * wet_occlusion_factor;

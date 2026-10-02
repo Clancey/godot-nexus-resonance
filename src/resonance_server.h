@@ -404,6 +404,8 @@ class ResonanceServer : public Object {
     int occlusion_type = 1;
     int max_occlusion_samples = resonance::kMaxOcclusionSamples;
     int max_simulation_sources = resonance::kMaxSimulationSources;
+    /// Stays set after the first max_simulation_sources refusal. Clearing it would log the same cap again.
+    bool simulation_source_cap_error_emitted_ = false;
     float hrtf_volume_db = 0.0f;
     /// 0=None, 1=RMS for embedded default HRTF; SOFA uses asset norm_type.
     int hrtf_normalization_type = 0;
@@ -512,6 +514,7 @@ class ResonanceServer : public Object {
     struct CachedReflectionParams {
         IPLReflectionEffectParams params{};
         uint32_t epoch = 0;
+        uint32_t ir_generation = 0;
     };
     std::array<std::array<CachedReflectionParams, kMaxCacheHandles>, kCacheSlots> reflection_param_cache_{};
     std::atomic<int> reflection_param_cache_front_{0};
@@ -519,6 +522,9 @@ class ResonanceServer : public Object {
     /// Worker-only: last convolution IR params per handle when fetch_ok (null-IR fallback).
     std::array<IPLReflectionEffectParams, kMaxCacheHandles> last_good_reflection_params_{};
     std::array<std::atomic<uint8_t>, kMaxCacheHandles> last_good_reflection_valid_{};
+    /// Bumped when a handle is created or destroyed so a recycled id cannot Apply the previous IR.
+    std::array<std::atomic<uint32_t>, kMaxCacheHandles> source_ir_generation_{};
+    void _retire_reflection_ir_for_handle(int32_t handle);
     /// Worker-only: last interpolated STATICSOURCE baked energy (repro trace / debug).
     float reflection_baked_energy_last_[kMaxCacheHandles]{};
 
@@ -669,8 +675,8 @@ class ResonanceServer : public Object {
     /// Scene path / label for pathing-batch resolve warnings (main sets, worker reads).
     std::mutex source_pathing_owner_mutex_;
     std::unordered_map<int32_t, String> source_pathing_owner_path_;
-    /// Once per source handle for PreferredInvalid / SingleVolumeFallback / AmbiguousMultiVolume.
-    std::unordered_set<int32_t> pathing_batch_resolve_warned_;
+    /// Once per owner path and lookup outcome. Source destroy must not clear this, or each new voice warns again.
+    std::vector<String> pathing_batch_resolve_warned_keys_;
 
     /// When non-empty, bake uses these assets (with transforms) instead of live geometry. Set by editor before bake.
     std::vector<Ref<ResonanceGeometryAsset>> _bake_static_scene_assets;
@@ -1226,6 +1232,8 @@ class ResonanceServer : public Object {
     /// worker SetInputs so pathing-volume warnings are not emitted for sources that never run pathing.
     int32_t create_source_handle(Vector3 position, float radius, const String& pathing_owner_path = String(),
                                  int pathing_enabled_override = -1);
+    /// True while the cap error has already been logged and the live source count is still at max_simulation_sources.
+    bool simulation_source_cap_blocks_create() const;
     void destroy_source_handle(int32_t handle);
     IPLSource get_source_from_handle(int32_t handle);
     /// Epoch for source/probe-batch handle validity across reinit (see resonance_source_handle_policy.h).
@@ -1246,6 +1254,7 @@ class ResonanceServer : public Object {
     /// Does not acquire simulation_mutex; may be false briefly after source create until the next sync. Use fetch_reverb_params when params are required.
     bool peek_reverb_params_likely_available(int32_t handle) const;
     bool fetch_reverb_params(int32_t handle, IPLReflectionEffectParams& out_params, bool* out_epoch_fresh = nullptr);
+    uint32_t get_source_ir_generation(int32_t handle) const;
     /// Current reflection param cache epoch (audio-thread safe read).
     uint32_t get_reflection_param_cache_epoch() const;
     /// Current pathing param cache epoch (audio-thread safe read).

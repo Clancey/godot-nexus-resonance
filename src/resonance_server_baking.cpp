@@ -916,13 +916,26 @@ IPLProbeBatch ResonanceServer::_get_pathing_batch_for_source(int32_t source_hand
         bool emit = false;
         {
             std::lock_guard<std::mutex> lock(source_pathing_owner_mutex_);
-            if (pathing_batch_resolve_warned_.insert(source_handle).second) {
+            const auto it = source_pathing_owner_path_.find(source_handle);
+            String owner_key;
+            if (it != source_pathing_owner_path_.end() && !it->second.is_empty()) {
+                owner = it->second;
+                owner_key = owner;
+            } else {
+                owner = String("source handle ") + String::num_int64(source_handle);
+                owner_key = String("unassigned");
+            }
+            const String key = owner_key + String("|") + String::num_int64(static_cast<int64_t>(outcome));
+            bool seen = false;
+            for (const String& prev : pathing_batch_resolve_warned_keys_) {
+                if (prev == key) {
+                    seen = true;
+                    break;
+                }
+            }
+            if (!seen) {
+                pathing_batch_resolve_warned_keys_.push_back(key);
                 emit = true;
-                const auto it = source_pathing_owner_path_.find(source_handle);
-                if (it != source_pathing_owner_path_.end() && !it->second.is_empty())
-                    owner = it->second;
-                else
-                    owner = String("source handle ") + String::num_int64(source_handle);
             }
         }
         if (emit) {

@@ -37,6 +37,19 @@ inline bool source_count_at_simulation_limit(int32_t active_count, int32_t max_s
     return active_count >= max_sources;
 }
 
+/// emit_error runs once per cap_error_emitted latch. Later refusals stay silent so a full polyphony loop does not flood the debugger.
+template <typename EmitError>
+inline bool reject_simulation_source_create_at_cap(int32_t active_count, int32_t max_sources, bool& cap_error_emitted,
+                                                   EmitError emit_error) {
+    if (!source_count_at_simulation_limit(active_count, max_sources))
+        return false;
+    if (!cap_error_emitted) {
+        cap_error_emitted = true;
+        emit_error();
+    }
+    return true;
+}
+
 /// When the free list is empty, sequential ids must not exceed cache capacity.
 inline bool can_alloc_sequential_source_handle(int32_t next_handle) {
     return next_handle < kMaxSimulationSourcesUserMax;

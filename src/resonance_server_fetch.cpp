@@ -5,6 +5,7 @@
 #include "resonance_pathing_deviation_policy.h"
 #include "resonance_pathing_fetch_policy.h"
 #include "resonance_pathing_inputs_policy.h"
+#include "resonance_polyphonic_voice_policy.h"
 #include "resonance_reflection_cache_publish_policy.h"
 #include "resonance_reflection_fetch_policy.h"
 #include "resonance_reflection_type_policy.h"
@@ -254,12 +255,14 @@ bool ResonanceServer::fetch_reverb_params(int32_t handle, IPLReflectionEffectPar
                 out_params.tanDevice = _tan();
         };
 
-        if (resonance::reflection_cache_entry_epoch_fresh(epoch_front, e_front.epoch)) {
+        const uint32_t live_ir_gen = source_ir_generation_[static_cast<size_t>(handle)].load(std::memory_order_acquire);
+        const bool ir_gen_live = resonance::voice_reflection_ir_generation_live(e_front.ir_generation, live_ir_gen);
+        if (ir_gen_live && resonance::reflection_cache_entry_epoch_fresh(epoch_front, e_front.epoch)) {
             copy_conv_entry(e_front);
             result = true;
             epoch_fresh = true;
             instrumentation_fetch_cache_hit.fetch_add(1, std::memory_order_relaxed);
-        } else if (resonance::reflection_stale_epoch_usable_for_mix(reflection_type, e_front.params)) {
+        } else if (ir_gen_live && resonance::reflection_stale_epoch_usable_for_mix(reflection_type, e_front.params)) {
             copy_conv_entry(e_front);
             result = true;
             instrumentation_fetch_refl_stale_epoch_fallback.fetch_add(1, std::memory_order_relaxed);
@@ -457,6 +460,7 @@ bool ResonanceServer::_worker_fetch_reflection_into_back(IPLSource src, int32_t 
         CachedReflectionParams rp{};
         rp.params = out_params;
         rp.epoch = reflection_param_cache_epoch_[refl_back];
+        rp.ir_generation = source_ir_generation_[static_cast<size_t>(handle)].load(std::memory_order_acquire);
         reflection_param_cache_[static_cast<size_t>(refl_back)][static_cast<size_t>(handle)] = std::move(rp);
         if (has_convolution && out_params.ir != nullptr && !conv_ir_from_last_good && handle >= 0 && handle < kMaxCacheHandles) {
             last_good_reflection_params_[static_cast<size_t>(handle)] = out_params;

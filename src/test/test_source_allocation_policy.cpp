@@ -23,6 +23,17 @@ TEST_CASE("source count limit matches max_simulation_sources", "[source_allocati
     REQUIRE(source_count_at_simulation_limit(8, 8));
 }
 
+TEST_CASE("two failed creates past the simulation source cap emit one error", "[source_allocation]") {
+    bool cap_error_emitted = false;
+    int error_signals = 0;
+    auto emit_error = [&]() { error_signals += 1; };
+    const bool first = reject_simulation_source_create_at_cap(4, 4, cap_error_emitted, emit_error);
+    const bool second = reject_simulation_source_create_at_cap(4, 4, cap_error_emitted, emit_error);
+    REQUIRE(first);
+    REQUIRE(second);
+    REQUIRE(error_signals == 1);
+}
+
 TEST_CASE("sequential source handle allocation stops at cache capacity", "[source_allocation]") {
     REQUIRE(can_alloc_sequential_source_handle(0));
     REQUIRE(can_alloc_sequential_source_handle(kMaxSimulationSourcesUserMax - 1));

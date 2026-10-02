@@ -399,23 +399,33 @@ ResonanceServer::SourceUpdateParams ResonancePlayer::_build_source_update_params
 void ResonancePlayer::_apply_update_source(int32_t pathing_batch, bool defer_if_sim_mutex_busy) {
     ResonanceServer* srv = ResonanceServer::get_singleton();
     _invalidate_source_handle_if_stale(srv);
-    if (!srv || source_handle < 0)
+    _ensure_voice_sources(srv);
+    if (!srv)
+        return;
+    std::vector<int32_t> handles;
+    _collect_simulation_source_handles(handles);
+    if (handles.empty())
         return;
 
     const ResonanceServer::SourceUpdateParams params = _build_source_update_params(srv, pathing_batch);
-
-    if (defer_if_sim_mutex_busy) {
+    for (int32_t handle : handles) {
+        if (!defer_if_sim_mutex_busy) {
+            srv->update_source(handle, params);
+            continue;
+        }
         if (srv->uses_batch_source_updates())
-            srv->enqueue_source_update(source_handle, params);
+            srv->enqueue_source_update(handle, params);
         else
-            srv->try_update_source(source_handle, params);
-    } else {
-        srv->update_source(source_handle, params);
+            srv->try_update_source(handle, params);
     }
 }
 
 void ResonancePlayer::_setup_attenuation(ResonanceServer* srv) {
-    if (!srv || source_handle < 0)
+    if (!srv)
+        return;
+    std::vector<int32_t> handles;
+    _collect_simulation_source_handles(handles);
+    if (handles.empty())
         return;
     const ConfigCache& c = config_cache_;
     int mode_for_server = 0;
@@ -444,21 +454,42 @@ void ResonancePlayer::_setup_attenuation(ResonanceServer* srv) {
         return;
     }
 
-    if (attenuation_setup_cache_.valid &&
+    const bool cache_hit =
+        attenuation_setup_cache_.valid &&
         resonance::attenuation_callback_data_equal(attenuation_setup_cache_.mode, attenuation_setup_cache_.min_distance,
                                                    attenuation_setup_cache_.max_distance, attenuation_setup_cache_.curve_samples,
                                                    attenuation_setup_cache_.num_curve_samples, mode_for_server, c.min_distance,
-                                                   c.max_distance, curve_local, num_curve)) {
-        return;
-    }
+                                                   c.max_distance, curve_local, num_curve);
+    if (!cache_hit)
+        attenuation_callback_handles_.clear();
+
+    const int apply_mode = cache_hit ? attenuation_setup_cache_.mode : mode_for_server;
+    const float apply_min = cache_hit ? attenuation_setup_cache_.min_distance : c.min_distance;
+    const float apply_max = cache_hit ? attenuation_setup_cache_.max_distance : c.max_distance;
+    const int apply_num_curve = cache_hit ? attenuation_setup_cache_.num_curve_samples : num_curve;
+    const float* apply_curve = cache_hit ? attenuation_setup_cache_.curve_samples : curve_local;
 
     PackedFloat32Array curve_samples;
-    if (num_curve > 0) {
-        curve_samples.resize(num_curve);
-        for (int i = 0; i < num_curve; i++)
-            curve_samples[i] = curve_local[i];
+    if (apply_num_curve > 0) {
+        curve_samples.resize(apply_num_curve);
+        for (int i = 0; i < apply_num_curve; i++)
+            curve_samples[i] = apply_curve[i];
     }
-    srv->set_source_attenuation_callback_data(source_handle, mode_for_server, c.min_distance, c.max_distance, curve_samples);
+    for (int32_t handle : handles) {
+        bool already = false;
+        for (int32_t applied : attenuation_callback_handles_) {
+            if (applied == handle) {
+                already = true;
+                break;
+            }
+        }
+        if (already)
+            continue;
+        srv->set_source_attenuation_callback_data(handle, apply_mode, apply_min, apply_max, curve_samples);
+        attenuation_callback_handles_.push_back(handle);
+    }
+    if (cache_hit)
+        return;
 
     attenuation_setup_cache_.mode = mode_for_server;
     attenuation_setup_cache_.min_distance = c.min_distance;
@@ -623,6 +654,7 @@ PlaybackParameters ResonancePlayer::_build_playback_params(const Vector3& listen
 void ResonancePlayer::_prepare_source_for_simulation(ResonanceServer* srv) {
     _ensure_config_valid();
     config_cache_frame_countdown--;
+    _ensure_voice_sources(srv);
 
     _setup_attenuation(srv);
 
@@ -668,6 +700,9 @@ bool ResonancePlayer::_playback_lod_should_apply_playback_params(double delta, b
 // availability. Builds PlaybackParameters (distance curves, perspective correction, wet gates) and pushes them to
 // the audio worker via _broadcast_update_parameters. opt_debug_out mirrors key scalars for HUD/debug drawers when set.
 void ResonancePlayer::_apply_playback_params_from_simulation(ResonanceServer* srv, ResonanceDebugData* opt_debug_out, double delta_seconds) {
+    if (!srv)
+        return;
+    _ensure_voice_sources(srv);
     if (!srv->is_spatial_audio_output_ready())
         return;
 
@@ -745,6 +780,7 @@ void ResonancePlayer::_apply_playback_params_from_simulation(ResonanceServer* sr
 void ResonancePlayer::_apply_playback_coeff_refresh_from_simulation(ResonanceServer* srv, double delta_seconds) {
     if (!srv || !srv->is_spatial_audio_output_ready() || !last_pushed_playback_params_valid_)
         return;
+    _ensure_voice_sources(srv);
 
     const ConfigCache& c = config_cache_;
     OcclusionData occ_data = srv->get_source_occlusion_data(source_handle);
@@ -801,8 +837,11 @@ void ResonancePlayer::_sync_player_debug_drawer(double delta, ResonanceServer* s
 
 void ResonancePlayer::_push_playback_parameters_from_simulation(ResonanceServer* srv, ResonanceDebugData* opt_debug_out, double delta_seconds,
                                                                 bool run_prepare) {
+    _ensure_voice_sources(srv);
     if (run_prepare)
         _prepare_source_for_simulation(srv);
+    else if (srv)
+        _setup_attenuation(srv);
     _apply_playback_params_from_simulation(srv, opt_debug_out, delta_seconds);
 }
 
@@ -813,7 +852,10 @@ void ResonancePlayer::_deferred_push_playback_parameters() {
     if (!player_config.is_valid() || !is_playing())
         return;
     ResonanceServer* srv = ResonanceServer::get_singleton();
-    if (!srv || !srv->is_simulating() || source_handle < 0)
+    if (!srv || !srv->is_initialized())
+        return;
+    _ensure_voice_sources(srv);
+    if (!srv->is_simulating() || source_handle < 0)
         return;
     _push_playback_parameters_from_simulation(srv, nullptr, 0.0);
 }
