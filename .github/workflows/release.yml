@@ -53,6 +53,13 @@ jobs:
       - name: Add GCC problem matcher
         run: echo "::add-matcher::${{ github.workspace }}/.github/gcc-problem-matcher.json"
 
+      - name: Preserve Steam Audio notices
+        uses: actions/upload-artifact@v5
+        with:
+          name: steam-audio-notices
+          path: src/lib/steamaudio/THIRDPARTY.md
+          if-no-files-found: error
+
       - name: Cache SCons build
         uses: actions/cache@v5
         with:
@@ -218,10 +225,10 @@ jobs:
           SCONS_CACHE: ${{ github.workspace }}/.scons-cache
         run: |
           scons platform=macos arch=universal target=template_debug build_tests=0 -j$(sysctl -n hw.logicalcpu)
-          lipo -verify_arch arm64 x86_64 addons/nexus_resonance/bin/macos/libnexus_resonance.dylib
+          lipo addons/nexus_resonance/bin/macos/libnexus_resonance.dylib -verify_arch arm64 x86_64
           scons platform=macos arch=universal target=template_release build_tests=0 -j$(sysctl -n hw.logicalcpu)
-          lipo -verify_arch arm64 x86_64 addons/nexus_resonance/bin/macos/libnexus_resonance.dylib
-          lipo -verify_arch arm64 x86_64 addons/nexus_resonance/bin/macos/libphonon.dylib
+          lipo addons/nexus_resonance/bin/macos/libnexus_resonance.dylib -verify_arch arm64 x86_64
+          lipo addons/nexus_resonance/bin/macos/libphonon.dylib -verify_arch arm64 x86_64
 
       - name: Setup Godot for addon load and lifetime regression
         uses: chickensoft-games/setup-godot@v2
@@ -358,6 +365,7 @@ jobs:
           mkdir -p release_addon/addons/nexus_resonance/bin/visionos-xcframeworks
           cp -r artifacts/bin-visionos/* release_addon/addons/nexus_resonance/bin/visionos-xcframeworks/
           cp LICENSE release_addon/addons/nexus_resonance/
+          cp artifacts/steam-audio-notices/THIRDPARTY.md release_addon/addons/nexus_resonance/STEAM_AUDIO_THIRDPARTY.md
           printf '%s\n' "$GITHUB_SHA" > release_addon/addons/nexus_resonance/bin/VERSION
           python3 - <<'PY'
           import json, os, sys

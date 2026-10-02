@@ -20,6 +20,7 @@ SDK_URL = (
 SDK_SHA256 = "bd58fc49a49acb7eec7ced1a2d52fd528d7bf054e320a4468d0d61d566605b68"
 DEST = Path(__file__).resolve().parents[1] / "src/lib/steamaudio"
 REQUIRED_FILES = (
+    "THIRDPARTY.md",
     "include/phonon.h", "include/phonon_interfaces.h", "include/phonon_version.h",
     "lib/windows-x64/phonon.dll", "lib/windows-x64/phonon.lib",
     "lib/windows-x64/GPUUtilities.dll", "lib/windows-x64/TrueAudioNext.dll",
@@ -59,7 +60,8 @@ def cache_valid(destination):
     try:
         recorded = json.loads(stamp.read_text())
         return (
-            recorded.get("archive_sha256") == SDK_SHA256
+            isinstance(recorded, dict)
+            and recorded.get("archive_sha256") == SDK_SHA256
             and recorded.get("files") == required_hashes(destination)
         )
     except (OSError, ValueError) as error:

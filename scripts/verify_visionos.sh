@@ -18,9 +18,19 @@ for variant in visionos visionos_simulator; do
         suffix=.simulator
     fi
     for archive in "$BIN/$variant/"*.a; do
-        lipo -verify_arch arm64 "$archive"
+        lipo "$archive" -verify_arch arm64
         otool -l "$archive" > "$WORK/metadata"
-        grep -Eq "platform ($platform|$platform_name)" "$WORK/metadata"
+        python3 - "$WORK/metadata" "$platform" "$platform_name" <<'PY'
+import re
+import sys
+from pathlib import Path
+metadata = Path(sys.argv[1]).read_text()
+platforms = re.findall(r"^\s*platform\s+(\S+)", metadata, re.M)
+minimums = re.findall(r"^\s*minos\s+(\S+)", metadata, re.M)
+assert platforms and all(p in sys.argv[2:] for p in platforms), platforms
+assert len(minimums) == len(platforms), "Missing deployment metadata"
+assert all(tuple(map(int, v.split("."))) <= (2, 0, 0) for v in minimums), minimums
+PY
     done
     for target in template_debug template_release; do
         addon="$BIN/$variant/libnexus_resonance.visionos.$target.arm64$suffix.a"

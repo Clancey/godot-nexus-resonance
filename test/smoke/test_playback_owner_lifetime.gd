@@ -32,8 +32,24 @@ func _run() -> void:
 		stream.data = data
 		player.stream = stream
 		root.add_child(player)
+		# The statically typed native base call bypasses the addon's logical-stream
+		# getter and obtains the wrapper that actually owns engine playbacks.
+		var engine_player: AudioStreamPlayer3D = player
+		var wrapped: AudioStream = engine_player.get_stream()
+		if wrapped == null or wrapped.get_class() != "ResonanceStream":
+			push_error("Lifetime test did not obtain the native ResonanceStream")
+			player.free()
+			quit(1)
+			return
+		var held: AudioStreamPlayback = wrapped.instantiate_playback()
+		if held == null or held.get_class() != "ResonanceStreamPlayback":
+			push_error("Lifetime test did not instantiate the native playback")
+			player.free()
+			quit(1)
+			return
 		if iteration % 3 == 1:
 			# Replacing the engine stream releases a playback before its owner.
+			held = null
 			player.stream = null
 		elif iteration % 3 == 2:
 			player.max_polyphony = 3
@@ -41,6 +57,7 @@ func _run() -> void:
 			player.play()
 			await process_frame
 		player.free()
+		held = null
 		await process_frame
 	for frame in 4:
 		await process_frame
