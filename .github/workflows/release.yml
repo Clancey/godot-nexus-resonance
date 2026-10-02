@@ -240,6 +240,21 @@ jobs:
       - name: Verify macOS addon in Godot
         run: bash .github/scripts/test_macos_addon.sh
 
+      - name: Preserve macOS diagnostics
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: macos-verification-logs
+          path: build/verification/
+          if-no-files-found: ignore
+
+      - name: Save successful macOS compilation cache
+        if: always()
+        uses: actions/cache/save@v5
+        with:
+          path: .scons-cache
+          key: scons-macOS-all-v1-${{ hashFiles('src/lib/godot-cpp/SConstruct', 'SConstruct') }}
+
       - name: Build iOS
         env:
           SCONS_CACHE: ${{ github.workspace }}/.scons-cache
