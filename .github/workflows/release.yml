@@ -188,8 +188,8 @@ jobs:
 
       - name: Stage Windows bundle
         run: |
-          tar -czf "$RUNNER_TEMP/bin-windows.tar.gz" -C addons/nexus_resonance/bin .
-          bash .github/scripts/release_staging.sh upload "$RUNNER_TEMP/bin-windows.tar.gz"
+          tar -czf bin-windows.tar.gz -C addons/nexus_resonance/bin .
+          bash .github/scripts/release_staging.sh upload bin-windows.tar.gz
 
   build-macos-ios:
     name: Build (macOS / iOS)
