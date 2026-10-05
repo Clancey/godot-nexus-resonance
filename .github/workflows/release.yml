@@ -6,19 +6,50 @@ on:
       - 'v*'
       - 'fs-*'
   # A tag pushed to the fork has not started this by itself. Run it by hand
-  # on the tag: gh workflow run release.yml --ref <tag>
+  # on the tag: gh workflow run release.yml --ref <tag> -f staging_only=false
   workflow_dispatch:
+    inputs:
+      staging_only:
+        description: 'Build and package into a throwaway draft only; never publish or create a tag'
+        type: boolean
+        default: true
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 permissions:
   contents: write
 
 jobs:
+  staging:
+    name: Create temporary draft
+    runs-on: ubuntu-22.04
+    outputs:
+      release_id: ${{ steps.create.outputs.release_id }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Check CI storage policy
+        run: bash ci/scripts/check_no_actions_artifacts.sh
+      - name: Validate publication ref
+        env:
+          STAGING_ONLY: ${{ github.event_name == 'workflow_dispatch' && inputs.staging_only }}
+        run: |
+          if [ "$STAGING_ONLY" != "true" ]; then
+            case "$GITHUB_REF" in
+              refs/tags/v*|refs/tags/fs-*) ;;
+              *) echo "::error::Publication requires an existing v* or fs-* tag"; exit 1 ;;
+            esac
+          fi
+      - name: Create run-owned draft
+        id: create
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash .github/scripts/release_staging.sh create
+
   build-linux-android:
     name: Build (Linux / Android)
+    needs: staging
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v5
@@ -94,14 +125,17 @@ jobs:
           scons platform=android arch=x86_64 target=template_debug build_tests=0 ndk_version=23.2.8568313 -j$(nproc)
           scons platform=android arch=x86_64 target=template_release build_tests=0 ndk_version=23.2.8568313 -j$(nproc)
 
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v5
+      - name: Stage binaries on temporary draft
+        uses: ./.github/actions/stage-binaries
         with:
-          name: bin-linux-android
-          path: addons/nexus_resonance/bin/
+          release_id: ${{ needs.staging.outputs.release_id }}
+          bundle: bin-linux-android
+        env:
+          GH_TOKEN: ${{ github.token }}
 
   build-windows:
     name: Build (Windows MSVC)
+    needs: staging
     runs-on: windows-2022
     defaults:
       run:
@@ -162,14 +196,17 @@ jobs:
           BIN=addons/nexus_resonance/bin/windows
           rm -f "$BIN"/*.exp "$BIN"/*.lib
 
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v5
+      - name: Stage binaries on temporary draft
+        uses: ./.github/actions/stage-binaries
         with:
-          name: bin-windows
-          path: addons/nexus_resonance/bin/
+          release_id: ${{ needs.staging.outputs.release_id }}
+          bundle: bin-windows
+        env:
+          GH_TOKEN: ${{ github.token }}
 
   build-macos-ios:
     name: Build (macOS / iOS)
+    needs: staging
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v5
@@ -233,14 +270,17 @@ jobs:
           cp src/lib/godot-cpp/bin/libgodot-cpp.ios.template_debug.arm64.a "$BIN/"
           cp src/lib/godot-cpp/bin/libgodot-cpp.ios.template_release.arm64.a "$BIN/"
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v5
+      - name: Stage binaries on temporary draft
+        uses: ./.github/actions/stage-binaries
         with:
-          name: bin-macos-ios
-          path: addons/nexus_resonance/bin/
+          release_id: ${{ needs.staging.outputs.release_id }}
+          bundle: bin-macos-ios
+        env:
+          GH_TOKEN: ${{ github.token }}
 
   build-linux-arm64:
     name: Build (Linux arm64)
+    needs: staging
     runs-on: ubuntu-22.04
     env:
       SYSROOT: ${{ github.workspace }}/sysroot-bullseye-arm64
@@ -319,14 +359,17 @@ jobs:
           echo "highest glibc symbol version required: $MAX"
           python3 -c "import sys; v=tuple(int(x) for x in '$MAX'.split('_')[1].split('.')); sys.exit(0 if v <= (2,31) else 1)"
 
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v5
+      - name: Stage binaries on temporary draft
+        uses: ./.github/actions/stage-binaries
         with:
-          name: bin-linux-arm64
-          path: addons/nexus_resonance/bin/
+          release_id: ${{ needs.staging.outputs.release_id }}
+          bundle: bin-linux-arm64
+        env:
+          GH_TOKEN: ${{ github.token }}
 
   build-visionos:
     name: Build (visionOS)
+    needs: staging
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v5
@@ -385,37 +428,46 @@ jobs:
           ls addons/nexus_resonance/bin/visionos-xcframeworks
           rm -rf addons/nexus_resonance/bin/visionos addons/nexus_resonance/bin/visionos_simulator
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v5
+      - name: Stage binaries on temporary draft
+        uses: ./.github/actions/stage-binaries
         with:
-          name: bin-visionos
-          path: addons/nexus_resonance/bin/
+          release_id: ${{ needs.staging.outputs.release_id }}
+          bundle: bin-visionos
+        env:
+          GH_TOKEN: ${{ github.token }}
 
   create-release:
-    name: Create Release
-    needs: [build-linux-android, build-linux-arm64, build-windows, build-macos-ios, build-visionos]
+    name: Package Release
+    needs: [staging, build-linux-android, build-linux-arm64, build-windows, build-macos-ios, build-visionos]
     runs-on: ubuntu-22.04
+    env:
+      GH_TOKEN: ${{ github.token }}
+      STAGING_RELEASE_ID: ${{ needs.staging.outputs.release_id }}
+      STAGING_ONLY: ${{ github.event_name == 'workflow_dispatch' && inputs.staging_only }}
     steps:
       - name: Checkout
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
-          ref: ${{ github.ref }}
+          ref: ${{ github.sha }}
 
-      - name: Download build artifact
-        uses: actions/download-artifact@v5
-        with:
-          path: artifacts
+      - name: Download staged build bundles
+        run: |
+          for bundle in bin-linux-android bin-windows bin-macos-ios bin-linux-arm64 bin-visionos; do
+            mkdir -p "staged/$bundle"
+            bash .github/scripts/release_staging.sh download "$bundle.tar.gz" "$RUNNER_TEMP"
+            tar -xzf "$RUNNER_TEMP/$bundle.tar.gz" -C "staged/$bundle"
+          done
 
       - name: Prepare release addon
         run: |
           mkdir -p release_addon/addons/nexus_resonance/bin
           cp -r addons/nexus_resonance/* release_addon/addons/nexus_resonance/
-          cp -r artifacts/bin-linux-android/* release_addon/addons/nexus_resonance/bin/
-          cp -r artifacts/bin-windows/* release_addon/addons/nexus_resonance/bin/
-          cp -r artifacts/bin-macos-ios/* release_addon/addons/nexus_resonance/bin/
-          cp -r artifacts/bin-linux-arm64/* release_addon/addons/nexus_resonance/bin/
-          cp -r artifacts/bin-visionos/* release_addon/addons/nexus_resonance/bin/
+          cp -r staged/bin-linux-android/* release_addon/addons/nexus_resonance/bin/
+          cp -r staged/bin-windows/* release_addon/addons/nexus_resonance/bin/
+          cp -r staged/bin-macos-ios/* release_addon/addons/nexus_resonance/bin/
+          cp -r staged/bin-linux-arm64/* release_addon/addons/nexus_resonance/bin/
+          cp -r staged/bin-visionos/* release_addon/addons/nexus_resonance/bin/
           cp LICENSE release_addon/addons/nexus_resonance/
 
       - name: Verify build outputs
@@ -434,7 +486,8 @@ jobs:
             if [ -f "$f" ]; then
               echo "OK: $f"
             else
-              echo "WARN: $f not found"
+              echo "::error::$f not found"
+              exit 1
             fi
           done
 
@@ -442,6 +495,9 @@ jobs:
         id: version
         run: |
           TAG="${GITHUB_REF#refs/tags/}"
+          if [ "$STAGING_ONLY" = "true" ]; then
+            TAG="ci-stage-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          fi
           echo "version=${TAG#v}" >> $GITHUB_OUTPUT
 
       - name: Create addon zip
@@ -452,6 +508,7 @@ jobs:
           cd ../release_packages && sha256sum *.zip | tee SHA256SUMS.txt
 
       - name: Prepare release body
+        if: env.STAGING_ONLY != 'true'
         id: changelog
         run: |
           TAG="${GITHUB_REF#refs/tags/}"
@@ -483,14 +540,24 @@ jobs:
             echo "See [README](https://github.com/${{ github.repository }}) for requirements and usage."
           } > release_body.md
 
-      - name: Create Release
-        uses: softprops/action-gh-release@v2
-        with:
-          generate_release_notes: false
-          body_path: release_body.md
-          files: |
-            release_packages/*.zip
-            release_packages/SHA256SUMS.txt
-          prerelease: ${{ contains(github.ref_name, '-rc') }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Stage validation package (no publication)
+        if: env.STAGING_ONLY == 'true'
+        run: |
+          bash .github/scripts/release_staging.sh upload release_packages/*.zip release_packages/SHA256SUMS.txt
+          bash .github/scripts/release_staging.sh inspect | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Create Release without replacing existing assets
+        if: env.STAGING_ONLY != 'true'
+        run: |
+          tag="${GITHUB_REF#refs/tags/}"
+          gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" |
+            jq -se --arg tag "$tag" 'all(.[][]; .tag_name != $tag)'
+          flags=()
+          if [[ "$tag" == *-rc* ]]; then flags+=(--prerelease); fi
+          gh release create "$tag" --repo "$GITHUB_REPOSITORY" --verify-tag \
+            --title "$tag" --notes-file release_body.md "${flags[@]}" \
+            release_packages/*.zip release_packages/SHA256SUMS.txt
+
+      - name: Delete only this run's staging draft after publication
+        if: env.STAGING_ONLY != 'true'
+        run: bash .github/scripts/release_staging.sh delete

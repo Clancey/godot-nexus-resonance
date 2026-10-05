@@ -1,0 +1,28 @@
+name: Stage binaries
+description: Save this platform's binaries on the verified run-owned draft release.
+inputs:
+  release_id:
+    description: Numeric release ID created by this workflow attempt.
+    required: true
+  bundle:
+    description: Unique platform bundle name.
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Bundle and stage binaries
+      shell: bash
+      env:
+        STAGING_RELEASE_ID: ${{ inputs.release_id }}
+        BUNDLE: ${{ inputs.bundle }}
+      run: |
+        [[ "$BUNDLE" =~ ^bin-[a-z0-9-]+$ ]]
+        # Relative paths avoid GNU tar treating a Windows drive letter as a remote host.
+        archive="$BUNDLE.tar.gz"
+        tar -czf "$archive" -C addons/nexus_resonance/bin .
+        bash .github/scripts/release_staging.sh upload "$archive"
+        {
+          echo "### $BUNDLE"
+          echo "Stored on run-owned draft release ID \`$STAGING_RELEASE_ID\`."
+          tar -tzf "$archive"
+        } >> "$GITHUB_STEP_SUMMARY"
