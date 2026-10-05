@@ -3,7 +3,9 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import tarfile
 import tempfile
+import textwrap
 import unittest
 
 
@@ -147,6 +149,26 @@ class StagingTests(unittest.TestCase):
         self.assertNotEqual(
             self.run_script("upload", "bin-linux.tar.gz", DUPLICATE_ASSET="true").returncode, 0
         )
+
+    def test_bundle_works_with_windows_runner_temp(self):
+        helper = self.path / ".github/scripts/release_staging.sh"
+        helper.parent.mkdir(parents=True)
+        helper.write_text(SCRIPT.read_text())
+        binary = self.path / "addons/nexus_resonance/bin/windows/nexus_resonance.dll"
+        binary.parent.mkdir(parents=True)
+        binary.write_bytes(b"binary fixture")
+        action = (ROOT / ".github/actions/stage-binaries/action.yml").read_text()
+        shell = textwrap.dedent(action.split("      run: |\n", 1)[1])
+        result = subprocess.run(
+            ["bash", "-e", "-o", "pipefail"], input=shell, text=True,
+            cwd=self.path, capture_output=True, check=False,
+            env={**self.env, "BUNDLE": "bin-windows", "RUNNER_TEMP": r"D:\a\_temp"},
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        with tarfile.open(self.path / "bin-windows.tar.gz") as archive:
+            self.assertEqual(
+                archive.extractfile("./windows/nexus_resonance.dll").read(), b"binary fixture"
+            )
 
     def test_delete_targets_only_verified_release_id(self):
         result = self.run_script("delete")

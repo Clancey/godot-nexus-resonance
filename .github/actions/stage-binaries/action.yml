@@ -17,7 +17,8 @@ runs:
         BUNDLE: ${{ inputs.bundle }}
       run: |
         [[ "$BUNDLE" =~ ^bin-[a-z0-9-]+$ ]]
-        archive="$RUNNER_TEMP/$BUNDLE.tar.gz"
+        # Relative paths avoid GNU tar treating a Windows drive letter as a remote host.
+        archive="$BUNDLE.tar.gz"
         tar -czf "$archive" -C addons/nexus_resonance/bin .
         bash .github/scripts/release_staging.sh upload "$archive"
         {
