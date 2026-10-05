@@ -331,6 +331,8 @@ class ResonanceStreamPlayback : public AudioStreamPlayback {
     void set_base_playback(const Ref<AudioStreamPlayback>& p_playback);
     Ref<AudioStreamPlayback> get_base_playback() const { return base_playback; }
     Ref<AudioStreamPlayback> get_inner_stream_playback() const { return base_playback; }
+    /// Links this voice to its player for its whole life: the player clears the link in its destructor even when
+    /// the voice is not registered (stopped, or never started), because Godot can free the voice after the node.
     void set_owner_player(ResonancePlayer* p_player);
     void update_parameters(const PlaybackParameters& p_params);
 
@@ -473,7 +475,9 @@ class ResonancePlayer : public AudioStreamPlayer3D {
     };
     mutable std::mutex internal_playbacks_mutex_;
     std::vector<ResonanceStreamPlayback*> internal_playbacks_;
-    // Ownership starts at instantiation, before a voice is registered by _start.
+    /// Every voice whose `owner_player_` points here, registered or not: ownership starts at instantiation,
+    /// before _start registers the voice, and ends in the voice's destructor. Guarded by the global
+    /// owner-link mutex (resonance_player.cpp), never by internal_playbacks_mutex_.
     std::vector<ResonanceStreamPlayback*> owned_playbacks_;
     std::atomic<int> playback_count_{0};
     PlaybackVoiceSnapshot playback_snap_[2];
@@ -483,6 +487,7 @@ class ResonancePlayer : public AudioStreamPlayer3D {
     void internal_register_playback(ResonanceStreamPlayback* p);
     void internal_unregister_playback(ResonanceStreamPlayback* p);
     void internal_track_owned_playback(ResonanceStreamPlayback* p);
+    void internal_untrack_owned_playback(ResonanceStreamPlayback* p);
     void internal_reclaim_voice_source(int32_t handle, uint32_t epoch);
     void internal_copy_internal_playbacks(std::vector<ResonanceStreamPlayback*>& out) const;
     void _broadcast_update_parameters(const PlaybackParameters& p);
