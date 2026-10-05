@@ -10,11 +10,33 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: write
+
+env:
+  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
 jobs:
+  staging:
+    name: Create run-owned staging draft
+    runs-on: ubuntu-22.04
+    outputs:
+      release_id: ${{ steps.create.outputs.release_id }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Reject Actions artifact storage
+        run: bash ci/scripts/check_no_actions_artifacts.sh
+      - name: Create draft without creating a tag
+        id: create
+        run: bash .github/scripts/release_staging.sh create
+
   build-linux-android:
     name: Linux / Android
+    needs: staging
     timeout-minutes: 90
     runs-on: ubuntu-22.04
+    env:
+      STAGING_RELEASE_ID: ${{ needs.staging.outputs.release_id }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -89,16 +111,18 @@ jobs:
           scons platform=android arch=x86_64 target=template_debug build_tests=0 ndk_version=23.2.8568313 -j$(nproc)
           scons platform=android arch=x86_64 target=template_release build_tests=0 ndk_version=23.2.8568313 -j$(nproc)
 
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v5
-        with:
-          name: bin-linux-android
-          path: addons/nexus_resonance/bin/
+      - name: Stage Linux and Android bundle
+        run: |
+          tar -czf "$RUNNER_TEMP/bin-linux-android.tar.gz" -C addons/nexus_resonance/bin .
+          bash .github/scripts/release_staging.sh upload "$RUNNER_TEMP/bin-linux-android.tar.gz" src/lib/steamaudio/THIRDPARTY.md
 
   build-windows:
     name: Windows (MSVC)
+    needs: staging
     timeout-minutes: 60
     runs-on: windows-2022
+    env:
+      STAGING_RELEASE_ID: ${{ needs.staging.outputs.release_id }}
     defaults:
       run:
         shell: bash
@@ -157,16 +181,18 @@ jobs:
           BIN=addons/nexus_resonance/bin/windows
           rm -f "$BIN"/*.exp "$BIN"/*.lib
 
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v5
-        with:
-          name: bin-windows
-          path: addons/nexus_resonance/bin/
+      - name: Stage Windows bundle
+        run: |
+          tar -czf "$RUNNER_TEMP/bin-windows.tar.gz" -C addons/nexus_resonance/bin .
+          bash .github/scripts/release_staging.sh upload "$RUNNER_TEMP/bin-windows.tar.gz"
 
   build-macos-ios:
     name: macOS / iOS
+    needs: staging
     timeout-minutes: 90
     runs-on: macos-latest
+    env:
+      STAGING_RELEASE_ID: ${{ needs.staging.outputs.release_id }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -229,8 +255,7 @@ jobs:
           cp src/lib/godot-cpp/bin/libgodot-cpp.ios.template_debug.arm64.a "$BIN/"
           cp src/lib/godot-cpp/bin/libgodot-cpp.ios.template_release.arm64.a "$BIN/"
 
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v5
-        with:
-          name: bin-macos-ios
-          path: addons/nexus_resonance/bin/
+      - name: Stage macOS and iOS bundle
+        run: |
+          tar -czf "$RUNNER_TEMP/bin-macos-ios.tar.gz" -C addons/nexus_resonance/bin .
+          bash .github/scripts/release_staging.sh upload "$RUNNER_TEMP/bin-macos-ios.tar.gz"

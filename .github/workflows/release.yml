@@ -14,10 +14,29 @@ concurrency:
 permissions:
   contents: write
 
+env:
+  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
 jobs:
+  staging:
+    name: Create run-owned staging draft
+    runs-on: ubuntu-22.04
+    outputs:
+      release_id: ${{ steps.create.outputs.release_id }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Reject Actions artifact storage
+        run: bash ci/scripts/check_no_actions_artifacts.sh
+      - name: Create draft without creating a tag
+        id: create
+        run: bash .github/scripts/release_staging.sh create
+
   build-linux-android:
     name: Build (Linux / Android)
+    needs: staging
     runs-on: ubuntu-22.04
+    env:
+      STAGING_RELEASE_ID: ${{ needs.staging.outputs.release_id }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -54,11 +73,7 @@ jobs:
         run: echo "::add-matcher::${{ github.workspace }}/.github/gcc-problem-matcher.json"
 
       - name: Preserve Steam Audio notices
-        uses: actions/upload-artifact@v5
-        with:
-          name: steam-audio-notices
-          path: src/lib/steamaudio/THIRDPARTY.md
-          if-no-files-found: error
+        run: bash .github/scripts/release_staging.sh upload src/lib/steamaudio/THIRDPARTY.md
 
       - name: Cache SCons build
         uses: actions/cache@v5
@@ -101,15 +116,17 @@ jobs:
           scons platform=android arch=x86_64 target=template_debug build_tests=0 ndk_version=23.2.8568313 -j$(nproc)
           scons platform=android arch=x86_64 target=template_release build_tests=0 ndk_version=23.2.8568313 -j$(nproc)
 
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v5
-        with:
-          name: bin-linux-android
-          path: addons/nexus_resonance/bin/
+      - name: Stage Linux and Android bundle
+        run: |
+          tar -czf "$RUNNER_TEMP/bin-linux-android.tar.gz" -C addons/nexus_resonance/bin .
+          bash .github/scripts/release_staging.sh upload "$RUNNER_TEMP/bin-linux-android.tar.gz"
 
   build-windows:
     name: Build (Windows MSVC)
+    needs: staging
     runs-on: windows-2022
+    env:
+      STAGING_RELEASE_ID: ${{ needs.staging.outputs.release_id }}
     defaults:
       run:
         shell: bash
@@ -169,15 +186,17 @@ jobs:
           BIN=addons/nexus_resonance/bin/windows
           rm -f "$BIN"/*.exp "$BIN"/*.lib
 
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v5
-        with:
-          name: bin-windows
-          path: addons/nexus_resonance/bin/
+      - name: Stage Windows bundle
+        run: |
+          tar -czf "$RUNNER_TEMP/bin-windows.tar.gz" -C addons/nexus_resonance/bin .
+          bash .github/scripts/release_staging.sh upload "$RUNNER_TEMP/bin-windows.tar.gz"
 
   build-macos-ios:
     name: Build (macOS / iOS)
+    needs: staging
     runs-on: macos-latest
+    env:
+      STAGING_RELEASE_ID: ${{ needs.staging.outputs.release_id }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -240,21 +259,9 @@ jobs:
       - name: Verify macOS addon in Godot
         run: bash .github/scripts/test_macos_addon.sh
 
-      - name: Preserve macOS binaries for failure diagnosis
-        if: failure()
-        uses: actions/upload-artifact@v5
-        with:
-          name: macos-diagnostic-binaries
-          path: addons/nexus_resonance/bin/macos/
-          if-no-files-found: ignore
-
-      - name: Preserve macOS diagnostics
+      - name: Show macOS diagnostics in job log
         if: always()
-        uses: actions/upload-artifact@v5
-        with:
-          name: macos-verification-logs
-          path: build/verification/
-          if-no-files-found: ignore
+        run: bash .github/scripts/show_ci_diagnostics.sh
 
       - name: Save successful macOS compilation cache
         if: always()
@@ -276,17 +283,18 @@ jobs:
           cp src/lib/godot-cpp/bin/libgodot-cpp.ios.template_debug.arm64.a "$BIN/"
           cp src/lib/godot-cpp/bin/libgodot-cpp.ios.template_release.arm64.a "$BIN/"
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v5
-        with:
-          name: bin-macos-ios
-          path: addons/nexus_resonance/bin/
+      - name: Stage macOS and iOS bundle
+        run: |
+          tar -czf "$RUNNER_TEMP/bin-macos-ios.tar.gz" -C addons/nexus_resonance/bin .
+          bash .github/scripts/release_staging.sh upload "$RUNNER_TEMP/bin-macos-ios.tar.gz"
 
   build-linux-arm64:
     name: Build (Linux arm64)
+    needs: staging
     runs-on: ubuntu-22.04
     env:
       SYSROOT: ${{ github.workspace }}/sysroot-bullseye-arm64
+      STAGING_RELEASE_ID: ${{ needs.staging.outputs.release_id }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -324,15 +332,17 @@ jobs:
           MAX=$(aarch64-linux-gnu-objdump -T "$BIN"/*.so | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1)
           echo "Highest glibc requirement: $MAX"
           python3 -c "assert tuple(map(int, '$MAX'.split('_')[1].split('.'))) <= (2,31)"
-      - uses: actions/upload-artifact@v5
-        with:
-          name: bin-linux-arm64
-          path: addons/nexus_resonance/bin/
-          if-no-files-found: error
+      - name: Stage Linux arm64 bundle
+        run: |
+          tar -czf "$RUNNER_TEMP/bin-linux-arm64.tar.gz" -C addons/nexus_resonance/bin .
+          bash .github/scripts/release_staging.sh upload "$RUNNER_TEMP/bin-linux-arm64.tar.gz"
 
   build-visionos:
     name: Build (visionOS)
+    needs: staging
     runs-on: macos-15
+    env:
+      STAGING_RELEASE_ID: ${{ needs.staging.outputs.release_id }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -355,16 +365,17 @@ jobs:
         run: bash scripts/verify_visionos.sh
       - name: Pack XCFrameworks
         run: make visionos-xcframeworks
-      - uses: actions/upload-artifact@v5
-        with:
-          name: bin-visionos
-          path: addons/nexus_resonance/bin/visionos-xcframeworks/
-          if-no-files-found: error
+      - name: Stage visionOS bundle
+        run: |
+          tar -czf "$RUNNER_TEMP/bin-visionos.tar.gz" -C addons/nexus_resonance/bin/visionos-xcframeworks .
+          bash .github/scripts/release_staging.sh upload "$RUNNER_TEMP/bin-visionos.tar.gz"
 
   create-release:
     name: Create Release
-    needs: [build-linux-android, build-linux-arm64, build-windows, build-macos-ios, build-visionos]
+    needs: [staging, build-linux-android, build-linux-arm64, build-windows, build-macos-ios, build-visionos]
     runs-on: ubuntu-22.04
+    env:
+      STAGING_RELEASE_ID: ${{ needs.staging.outputs.release_id }}
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -372,23 +383,28 @@ jobs:
           fetch-depth: 0
           ref: ${{ github.ref }}
 
-      - name: Download build artifact
-        uses: actions/download-artifact@v5
-        with:
-          path: artifacts
+      - name: Download owned staging bundles
+        run: |
+          for bundle in bin-linux-android bin-linux-arm64 bin-windows bin-macos-ios bin-visionos; do
+            mkdir -p "staging/$bundle"
+            bash .github/scripts/release_staging.sh download "$bundle.tar.gz" "$RUNNER_TEMP"
+            tar -xzf "$RUNNER_TEMP/$bundle.tar.gz" -C "staging/$bundle"
+          done
+          mkdir -p staging/steam-audio-notices
+          bash .github/scripts/release_staging.sh download THIRDPARTY.md staging/steam-audio-notices
 
       - name: Prepare release addon
         run: |
           mkdir -p release_addon/addons/nexus_resonance/bin
           cp -r addons/nexus_resonance/* release_addon/addons/nexus_resonance/
-          cp -r artifacts/bin-linux-android/* release_addon/addons/nexus_resonance/bin/
-          cp -r artifacts/bin-windows/* release_addon/addons/nexus_resonance/bin/
-          cp -r artifacts/bin-macos-ios/* release_addon/addons/nexus_resonance/bin/
-          cp -r artifacts/bin-linux-arm64/* release_addon/addons/nexus_resonance/bin/
+          cp -r staging/bin-linux-android/* release_addon/addons/nexus_resonance/bin/
+          cp -r staging/bin-windows/* release_addon/addons/nexus_resonance/bin/
+          cp -r staging/bin-macos-ios/* release_addon/addons/nexus_resonance/bin/
+          cp -r staging/bin-linux-arm64/* release_addon/addons/nexus_resonance/bin/
           mkdir -p release_addon/addons/nexus_resonance/bin/visionos-xcframeworks
-          cp -r artifacts/bin-visionos/* release_addon/addons/nexus_resonance/bin/visionos-xcframeworks/
+          cp -r staging/bin-visionos/* release_addon/addons/nexus_resonance/bin/visionos-xcframeworks/
           cp LICENSE release_addon/addons/nexus_resonance/
-          cp artifacts/steam-audio-notices/THIRDPARTY.md release_addon/addons/nexus_resonance/STEAM_AUDIO_THIRDPARTY.md
+          cp staging/steam-audio-notices/THIRDPARTY.md release_addon/addons/nexus_resonance/STEAM_AUDIO_THIRDPARTY.md
           printf '%s\n' "$GITHUB_SHA" > release_addon/addons/nexus_resonance/bin/VERSION
           python3 - <<'PY'
           import json, os, sys
@@ -425,11 +441,7 @@ jobs:
           sha256sum *.zip > SHA256SUMS.txt
 
       - name: Upload verified package without publishing
-        uses: actions/upload-artifact@v5
-        with:
-          name: release-package
-          path: release_packages/
-          if-no-files-found: error
+        run: bash .github/scripts/release_staging.sh upload release_packages/*.zip release_packages/SHA256SUMS.txt
 
       - name: Prepare release body
         if: startsWith(github.ref, 'refs/tags/') && github.event_name == 'push'
@@ -474,3 +486,14 @@ jobs:
             release_packages/SHA256SUMS.txt
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  cleanup-staging:
+    name: Delete staging draft after tag release
+    needs: [staging, build-linux-android, build-linux-arm64, build-windows, build-macos-ios, build-visionos, create-release]
+    if: always() && github.event_name == 'push' && needs.staging.result == 'success'
+    runs-on: ubuntu-22.04
+    env:
+      STAGING_RELEASE_ID: ${{ needs.staging.outputs.release_id }}
+    steps:
+      - uses: actions/checkout@v5
+      - run: bash .github/scripts/release_staging.sh delete
