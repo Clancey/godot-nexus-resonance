@@ -37,6 +37,7 @@
 #include <godot_cpp/variant/utility_functions.hpp>
 #include <godot_cpp/variant/vector4.hpp>
 #include <limits>
+#include <mutex>
 #include <sstream>
 
 using namespace godot;
@@ -101,9 +102,31 @@ ResonanceStreamPlayback::ResonanceStreamPlayback() {
     parametric_path_sh_coeffs[1] = parametric_path_sh_coeffs[2] = parametric_path_sh_coeffs[3] = 0.0f;
 }
 
-ResonanceStreamPlayback::~ResonanceStreamPlayback() {
-    if (owner_player_)
+namespace {
+// Serialises the voice <-> player link. AudioServer frees a voice after the node that played it when the node
+// is freed within a few frames of play(); without this the voice unlocked the dead player's mutex (abort).
+std::mutex& owner_link_mutex() {
+    static std::mutex m;
+    return m;
+}
+} // namespace
+
+void ResonanceStreamPlayback::set_owner_player(ResonancePlayer* p_player) {
+    std::lock_guard<std::mutex> link(owner_link_mutex());
+    if (owner_player_ == p_player)
+        return;
+    if (owner_player_) {
+        auto& owned = owner_player_->owned_playbacks_;
+        owned.erase(std::remove(owned.begin(), owned.end(), this), owned.end());
         owner_player_->internal_unregister_playback(this);
+    }
+    owner_player_ = p_player;
+    if (p_player)
+        p_player->owned_playbacks_.push_back(this);
+}
+
+ResonanceStreamPlayback::~ResonanceStreamPlayback() {
+    set_owner_player(nullptr);
     _cleanup_steam_audio();
 }
 
@@ -474,6 +497,14 @@ void ResonancePlayer::_exit_tree() {
 }
 
 ResonancePlayer::~ResonancePlayer() {
+    {
+        std::lock_guard<std::mutex> link(owner_link_mutex());
+        for (ResonanceStreamPlayback* p : owned_playbacks_) {
+            if (p)
+                p->owner_player_ = nullptr;
+        }
+        owned_playbacks_.clear();
+    }
     std::vector<ResonanceStreamPlayback*> copy;
     {
         std::lock_guard<std::mutex> lock(internal_playbacks_mutex_);

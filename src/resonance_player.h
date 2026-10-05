@@ -319,7 +319,9 @@ class ResonanceStreamPlayback : public AudioStreamPlayback {
     void set_base_playback(const Ref<AudioStreamPlayback>& p_playback);
     Ref<AudioStreamPlayback> get_base_playback() const { return base_playback; }
     Ref<AudioStreamPlayback> get_inner_stream_playback() const { return base_playback; }
-    void set_owner_player(ResonancePlayer* p_player) { owner_player_ = p_player; }
+    /// Links this voice to its player for its whole life: the player clears the link in its destructor even when
+    /// the voice is not registered (stopped, or never started), because Godot can free the voice after the node.
+    void set_owner_player(ResonancePlayer* p_player);
     void update_parameters(const PlaybackParameters& p_params);
 
     virtual int32_t _mix(AudioFrame* buffer, float rate_scale, int32_t frames) override; // Mixes audio frames into the buffer
@@ -461,6 +463,8 @@ class ResonancePlayer : public AudioStreamPlayer3D {
     };
     mutable std::mutex internal_playbacks_mutex_;
     std::vector<ResonanceStreamPlayback*> internal_playbacks_;
+    /// Every voice whose `owner_player_` points here, registered or not. Guarded by the global owner-link mutex.
+    std::vector<ResonanceStreamPlayback*> owned_playbacks_;
     PlaybackVoiceSnapshot playback_snap_[2];
     std::atomic<int> playback_snap_front_{0};
     void internal_publish_playback_snapshot();
