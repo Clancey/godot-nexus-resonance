@@ -8,11 +8,30 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
+
+permissions:
+  contents: write
 
 jobs:
+  staging:
+    name: Create temporary draft
+    runs-on: ubuntu-22.04
+    outputs:
+      release_id: ${{ steps.create.outputs.release_id }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Check CI storage policy
+        run: bash ci/scripts/check_no_actions_artifacts.sh
+      - name: Create run-owned draft
+        id: create
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash .github/scripts/release_staging.sh create
+
   build-linux-android:
     name: Linux / Android
+    needs: staging
     timeout-minutes: 90
     runs-on: ubuntu-22.04
     steps:
@@ -89,14 +108,17 @@ jobs:
           scons platform=android arch=x86_64 target=template_debug build_tests=0 ndk_version=23.2.8568313 -j$(nproc)
           scons platform=android arch=x86_64 target=template_release build_tests=0 ndk_version=23.2.8568313 -j$(nproc)
 
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v5
+      - name: Stage binaries on temporary draft
+        uses: ./.github/actions/stage-binaries
         with:
-          name: bin-linux-android
-          path: addons/nexus_resonance/bin/
+          release_id: ${{ needs.staging.outputs.release_id }}
+          bundle: bin-linux-android
+        env:
+          GH_TOKEN: ${{ github.token }}
 
   build-windows:
     name: Windows (MSVC)
+    needs: staging
     timeout-minutes: 60
     runs-on: windows-2022
     defaults:
@@ -157,14 +179,17 @@ jobs:
           BIN=addons/nexus_resonance/bin/windows
           rm -f "$BIN"/*.exp "$BIN"/*.lib
 
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v5
+      - name: Stage binaries on temporary draft
+        uses: ./.github/actions/stage-binaries
         with:
-          name: bin-windows
-          path: addons/nexus_resonance/bin/
+          release_id: ${{ needs.staging.outputs.release_id }}
+          bundle: bin-windows
+        env:
+          GH_TOKEN: ${{ github.token }}
 
   build-macos-ios:
     name: macOS / iOS
+    needs: staging
     timeout-minutes: 90
     runs-on: macos-latest
     steps:
@@ -229,8 +254,10 @@ jobs:
           cp src/lib/godot-cpp/bin/libgodot-cpp.ios.template_debug.arm64.a "$BIN/"
           cp src/lib/godot-cpp/bin/libgodot-cpp.ios.template_release.arm64.a "$BIN/"
 
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v5
+      - name: Stage binaries on temporary draft
+        uses: ./.github/actions/stage-binaries
         with:
-          name: bin-macos-ios
-          path: addons/nexus_resonance/bin/
+          release_id: ${{ needs.staging.outputs.release_id }}
+          bundle: bin-macos-ios
+        env:
+          GH_TOKEN: ${{ github.token }}

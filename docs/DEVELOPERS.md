@@ -257,10 +257,57 @@ Cost-aware defaults: PR gates stay on Linux; push/merge to main does not re-run 
 
 - **tests.yml** - Path-filtered **PR** gate (no run for materials/icons/docs-only; **not** on push/merge to main). **Linux C++** (format + Catch2 + strict clang-tidy subset) when `src/`** changes. **Windows C++** and **full smoke suite** only via `workflow_dispatch` (`run_windows` / `run_all_smokes`). **Godot** (GUT + lightning smoke) when C++ or `.gd` changes. GDScript-only: restore cached Linux `.so` (rebuild only on cache miss). Concurrency cancels superseded runs.
 - **gdscript-lint.yml** - `gdformat` / `gdlint` on changed `.gd` files only (PR + push).
-- **build.yml** - Multi-platform GDExtension binaries (**manual** `workflow_dispatch` **only**). Use before a release if you need artifacts without tagging.
-- **release.yml** - Full multi-platform build + GitHub Release on version tags (`v`*).
+- **build.yml** - Multi-platform GDExtension binaries (**manual** `workflow_dispatch` **only**). Platform `.tar.gz` bundles are retained on a run-owned temporary draft Release without tagging.
+- **release.yml** - Full multi-platform build + GitHub Release on existing version tags (`v`* or `fs-`*), including Linux arm64 and visionOS device/simulator xcframeworks. Manual dispatch defaults to draft-only validation; publishing from an existing tag requires `staging_only=false`.
 - **codeql.yml** - **Manual** `workflow_dispatch` **only** (needs Code Scanning / Advanced Security on the repo).
 - **stale.yml** - Weekly stale issue/PR cleanup.
+
+### No GitHub Actions artifacts
+
+Workflows never use GitHub Actions artifact storage. The guard
+`bash ci/scripts/check_no_actions_artifacts.sh` runs immediately after checkout
+in test jobs and before draft creation. It is shared unchanged with
+Clancey/JumpChase commit `6307ede6e34d52370641f17b7659c9e6347b106a`.
+PR checks also cover `fingerslingers` and changes to workflows, local actions,
+CI scripts and the guard.
+
+Linux builds and Godot GUT/smokes consume binaries in the **same job**, using
+`.github/actions/godot-tests`. The GD-only path retains its existing binary
+cache and builds locally on a miss. Native Catch2, clang-format, clang-tidy,
+optional Windows and all optional smoke coverage remain intact.
+
+Build/release handoffs use a unique **draft** GitHub Release named
+`ci-stage-<run_id>-<run_attempt>`, targeted at the exact workflow commit.
+`.github/scripts/release_staging.sh` checks its numeric ID, draft state,
+name/tag, ownership marker and commit before writes, reads or deletion.
+It refuses existing staging identities and tag refs; uploads never overwrite
+existing assets. The package job downloads the five platform bundles with
+the Release API, preserving the shipped addon, licenses, zip naming and
+`SHA256SUMS.txt`. No new caches replace the handoff.
+
+For safe full validation (no tag creation or publication):
+
+```bash
+gh workflow run release.yml --ref <feature-branch> -f staging_only=true
+```
+
+The completed draft-only run retains its bundles and final test package for
+inspection. Build-only runs and failed runs also retain their drafts for
+diagnosis. After inspection, set `GITHUB_REPOSITORY`, `GITHUB_RUN_ID`,
+`GITHUB_RUN_ATTEMPT`, `GITHUB_SHA`, and `STAGING_RELEASE_ID` to the exact run
+values from its job summary, then run:
+
+```bash
+bash .github/scripts/release_staging.sh inspect
+bash .github/scripts/release_staging.sh delete
+```
+
+Deletion removes **only** that verified draft ID, never tags, existing
+published releases, runs, caches or other stored files. Successful authorized
+tag publication cleans its staging draft automatically. Never put credentials
+or sensitive logs in release bundles; diagnostic output stays in job logs
+and summaries. The final published package remains
+`nexus_resonance-<tag-with-leading-v-removed>.zip` plus `SHA256SUMS.txt`.
 
 
 
@@ -404,5 +451,4 @@ All Steam Audio processors (Direct, Reflection, Path, Mixer, Ambisonic) follow a
 | Bake pipeline             | `resonance_baker.cpp`, `editor/resonance_bake_runner.gd`                                                      |
 | Runtime static rebuild    | `resonance_runtime_exporter.gd`, `ResonanceServer` export/replace, `doc_classes/ResonanceRuntimeExporter.xml` |
 | Native node migration     | [docs/adr/001-native-resonance-node-migration.md](adr/001-native-resonance-node-migration.md)                 |
-
 

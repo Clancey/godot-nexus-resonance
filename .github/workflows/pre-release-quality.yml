@@ -15,6 +15,9 @@ jobs:
           fetch-depth: 0
           submodules: recursive
 
+      - name: Check CI storage policy
+        run: bash ci/scripts/check_no_actions_artifacts.sh
+
       - name: Setup GDScript Toolkit
         uses: actions/setup-python@v6
         with:
