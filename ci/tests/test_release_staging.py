@@ -31,6 +31,8 @@ release.update(json.loads(os.environ.get("RELEASE_OVERRIDES", "{}")))
 if args[:2] in (["release", "upload"], ["release", "download"]):
     if os.environ.get("DUPLICATE_ASSET") == "true":
         sys.exit(1)
+elif args[:2] == ["release", "view"]:
+    print(json.dumps({"databaseId": int(os.environ.get("TAG_RESOLVED_ID", "123")), "isDraft": True}))
 elif "POST" in args:
     print(123)
 elif "DELETE" in args:
@@ -116,6 +118,15 @@ class StagingTests(unittest.TestCase):
     def test_existing_tag_blocks_deletion(self):
         self.assertNotEqual(self.run_script("delete", TAG_EXISTS="true").returncode, 0)
         self.assert_no_mutation()
+
+    def test_tag_lookup_must_resolve_verified_id(self):
+        for args in (("upload", "bin-linux.tar.gz"), ("download", "*.tar.gz", "out"), ("delete",)):
+            with self.subTest(args=args):
+                self.log.write_text("")
+                result = self.run_script(*args, TAG_RESOLVED_ID="124")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("different release", result.stderr)
+                self.assert_no_mutation()
 
     def test_api_failure_fails_closed(self):
         self.assertNotEqual(self.run_script("delete", API_FAIL="true").returncode, 0)

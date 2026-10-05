@@ -280,6 +280,7 @@ Build/release handoffs use a unique **draft** GitHub Release named
 `ci-stage-<run_id>-<run_attempt>`, targeted at the exact workflow commit.
 `.github/scripts/release_staging.sh` checks its numeric ID, draft state,
 name/tag, ownership marker and commit before writes, reads or deletion.
+The draft-aware tag lookup must resolve to that same numeric release ID.
 It refuses existing staging identities and tag refs; uploads never overwrite
 existing assets. The package job downloads the five platform bundles with
 the Release API, preserving the shipped addon, licenses, zip naming and
@@ -301,6 +302,9 @@ values from its job summary, then run:
 bash .github/scripts/release_staging.sh inspect
 bash .github/scripts/release_staging.sh delete
 ```
+
+Use **Re-run all jobs**, not only failed jobs: each attempt must create and
+use its own draft instead of writing to a previous attempt's staging release.
 
 Deletion removes **only** that verified draft ID, never tags, existing
 published releases, runs, caches or other stored files. Successful authorized
@@ -451,4 +455,3 @@ All Steam Audio processors (Direct, Reflection, Path, Mixer, Ambisonic) follow a
 | Bake pipeline             | `resonance_baker.cpp`, `editor/resonance_bake_runner.gd`                                                      |
 | Runtime static rebuild    | `resonance_runtime_exporter.gd`, `ResonanceServer` export/replace, `doc_classes/ResonanceRuntimeExporter.xml` |
 | Native node migration     | [docs/adr/001-native-resonance-node-migration.md](adr/001-native-resonance-node-migration.md)                 |
-

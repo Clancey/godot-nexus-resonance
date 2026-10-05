@@ -19,6 +19,11 @@ validate() {
       '.id == $id and .draft == true and .tag_name == $tag and
        .name == $tag and .body == $marker and .target_commitish == $sha' >/dev/null ||
     fail "Staging draft identity mismatch"
+  # gh uses a draft-aware lookup for tag-addressed transfers; pin its result too.
+  gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json databaseId,isDraft |
+    jq -e --argjson id "$STAGING_RELEASE_ID" \
+      '.databaseId == $id and .isDraft == true' >/dev/null ||
+    fail "Staging tag resolves to a different release"
   # A draft with an unpublished tag needs no git ref; never delete or move a tag.
   gh api "$endpoint/git/matching-refs/tags/$tag" |
     jq -e --arg ref "refs/tags/$tag" 'all(.[]; .ref != $ref)' >/dev/null ||
