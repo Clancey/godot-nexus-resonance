@@ -316,7 +316,7 @@ remain `nexus_resonance-<tag>.zip` (or the commit SHA on dispatch) and
 
 Staging creation uses the draft Release API with an explicit commit SHA, not a
 Git tag push. `.github/scripts/release_staging.sh` rejects existing staging
-tags/releases and checks the draft flag, release ID, bot author, repository/run/
+tags/releases and checks that no staging tag exists, the draft flag, release ID, bot author, repository/run/
 attempt/commit ownership marker, title, and target before every upload, download,
 or deletion. Duplicate asset names fail rather than overwrite. Drafts contain
 distributable build outputs only, never secrets or private diagnostics.
