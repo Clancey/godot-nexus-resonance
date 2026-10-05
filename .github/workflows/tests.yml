@@ -6,7 +6,7 @@ name: Tests
 
 on:
   pull_request:
-    branches: [main, master]
+    branches: [main, master, visionos]
     paths:
       - 'src/**'
       - 'SConstruct'
@@ -17,8 +17,10 @@ on:
       - 'addons/nexus_resonance/**/*.gd'
       - 'addons/nexus_resonance/**/*.gdextension'
       - 'addons/nexus_resonance/doc_classes/**'
-      - '.github/workflows/tests.yml'
+      - '.github/workflows/**'
+      - '.github/actions/**'
       - '.github/scripts/**'
+      - 'ci/scripts/**'
   workflow_dispatch:
     inputs:
       run_windows:
@@ -54,6 +56,12 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Reject Actions artifact storage
+        run: bash ci/scripts/check_no_actions_artifacts.sh
+
+      - name: Test draft staging safety
+        run: python3 -m unittest discover -s .github/scripts -p 'test_*.py'
+
       # Prefer git history over the Pulls API (works with read-only tokens).
       - uses: dorny/paths-filter@v4
         id: filter
@@ -75,8 +83,10 @@ jobs:
             gd:
               - 'addons/nexus_resonance/**/*.gd'
             workflow:
-              - '.github/workflows/tests.yml'
-              - '.github/scripts/prepare_godot_ci_project.sh'
+              - '.github/workflows/**'
+              - '.github/actions/**'
+              - '.github/scripts/**'
+              - 'ci/scripts/**'
 
       - id: result
         run: |
@@ -100,6 +110,8 @@ jobs:
           CPP="${{ steps.filter.outputs.cpp }}"
           GD="${{ steps.filter.outputs.gd }}"
           WF="${{ steps.filter.outputs.workflow }}"
+          # CI changes must exercise the native build/test path, not only a cached binary.
+          if [ "$WF" = "true" ]; then CPP=true; fi
           echo "cpp=$CPP" >> "$GITHUB_OUTPUT"
           echo "gd=$GD" >> "$GITHUB_OUTPUT"
 
@@ -117,17 +129,20 @@ jobs:
           echo "run_all_smokes=false" >> "$GITHUB_OUTPUT"
 
   cpp-linux:
-    name: C++ (Linux)
+    name: C++ + Godot (Linux)
     needs: changes
     if: needs.changes.outputs.cpp == 'true'
     runs-on: ubuntu-22.04
-    timeout-minutes: 45
+    timeout-minutes: 70
     steps:
       - name: Checkout
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
           submodules: recursive
+
+      - name: Reject Actions artifact storage
+        run: bash ci/scripts/check_no_actions_artifacts.sh
 
       - name: Cache Steam Audio SDK
         uses: actions/cache@v5
@@ -189,27 +204,28 @@ jobs:
           path: addons/nexus_resonance/bin/linux
           key: linux-ext-bin-${{ hashFiles('src/**/*.cpp', 'src/**/*.h', 'SConstruct', 'scripts/install_steam_audio.py') }}
 
-      - name: Upload bin artifact
+      - name: Test Godot with this job's native build
         if: needs.changes.outputs.run_godot == 'true'
-        uses: actions/upload-artifact@v5
+        uses: ./.github/actions/test-godot
         with:
-          name: nexus_resonance-bin-linux
-          path: addons/nexus_resonance/bin/
-          retention-days: 3
+          run_all_smokes: ${{ needs.changes.outputs.run_all_smokes }}
 
   # GDScript-only changes: reuse cached Linux .so instead of a full scons rebuild.
   ensure-bin-linux:
-    name: Ensure Linux bin (GD-only)
+    name: Godot (GD-only, local build/cache)
     needs: changes
     if: needs.changes.outputs.run_godot == 'true' && needs.changes.outputs.cpp != 'true'
     runs-on: ubuntu-22.04
-    timeout-minutes: 45
+    timeout-minutes: 70
     steps:
       - name: Checkout
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
           submodules: recursive
+
+      - name: Reject Actions artifact storage
+        run: bash ci/scripts/check_no_actions_artifacts.sh
 
       - name: Restore Linux extension binary
         id: bin-cache
@@ -245,12 +261,10 @@ jobs:
           cp src/lib/steamaudio/lib/linux-x64/libphonon.so addons/nexus_resonance/bin/linux/
           scons platform=linux target=template_debug build_tests=0 -j$(nproc)
 
-      - name: Upload bin artifact
-        uses: actions/upload-artifact@v5
+      - name: Test Godot with this job's native build/cache
+        uses: ./.github/actions/test-godot
         with:
-          name: nexus_resonance-bin-linux
-          path: addons/nexus_resonance/bin/
-          retention-days: 3
+          run_all_smokes: ${{ needs.changes.outputs.run_all_smokes }}
 
   cpp-build-test-windows:
     name: C++ Build & Unit Tests (Windows)
@@ -267,6 +281,9 @@ jobs:
         with:
           fetch-depth: 0
           submodules: recursive
+
+      - name: Reject Actions artifact storage
+        run: bash ci/scripts/check_no_actions_artifacts.sh
 
       - name: Cache Steam Audio SDK
         uses: actions/cache@v5
@@ -300,103 +317,3 @@ jobs:
 
       - name: Run C++ unit tests
         run: ./build/tests/nexus_resonance_tests.exe
-
-  godot-linux:
-    name: Godot (GUT + smokes)
-    needs: [changes, cpp-linux, ensure-bin-linux]
-    if: |
-      always()
-      && !cancelled()
-      && needs.changes.result == 'success'
-      && needs.changes.outputs.run_godot == 'true'
-      && (
-        (needs.changes.outputs.cpp == 'true' && needs.cpp-linux.result == 'success')
-        || (needs.changes.outputs.cpp != 'true' && needs.ensure-bin-linux.result == 'success')
-      )
-    runs-on: ubuntu-22.04
-    timeout-minutes: 25
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v5
-
-      - name: Download bin artifact
-        uses: actions/download-artifact@v5
-        with:
-          name: nexus_resonance-bin-linux
-          path: addons/nexus_resonance/bin
-
-      - name: Prepare Godot CI project
-        run: bash .github/scripts/prepare_godot_ci_project.sh
-
-      - name: Install GUT test framework
-        run: |
-          GUT_VERSION="9.6.0"
-          curl -fsSL -o /tmp/gut.zip "https://github.com/bitwes/Gut/archive/refs/tags/v${GUT_VERSION}.zip"
-          unzip -qo /tmp/gut.zip -d /tmp/gut
-          mkdir -p project/addons/gut
-          cp -r /tmp/gut/Gut-${GUT_VERSION}/addons/gut/* project/addons/gut/
-          rm -rf /tmp/gut /tmp/gut.zip
-
-      - name: Setup Godot 4.6
-        uses: chickensoft-games/setup-godot@v2
-        with:
-          version: "4.6.0"
-          use-dotnet: false
-
-      - name: Import project
-        run: godot --headless --path project --import
-        env:
-          GODOT_DISABLE_LEAK_CHECKS: 1
-
-      - name: Run GUT tests
-        run: |
-          if [ -d project/test/unit ] && ls project/test/unit/*.gd >/dev/null 2>&1; then
-            godot --headless -d --audio-driver Dummy --path project -s addons/gut/gut_cmdln.gd -gdir=res://test/unit -gexit
-          else
-            echo "No GUT tests under project/test/unit; skipping"
-          fi
-        env:
-          GODOT_DISABLE_LEAK_CHECKS: 1
-
-      - name: Run lightning smoke
-        run: |
-          if [ -f project/test/run_lightning_smoke.gd ]; then
-            godot --headless --audio-driver Dummy --path project -s res://test/run_lightning_smoke.gd
-          else
-            echo "Smoke script missing; skipping"
-          fi
-        env:
-          GODOT_DISABLE_LEAK_CHECKS: 1
-
-      - name: Run method-track smoke
-        if: needs.changes.outputs.run_all_smokes == 'true'
-        run: |
-          if [ -f project/test/run_resonance_method_track_smoke.gd ]; then
-            godot --headless --audio-driver Dummy --path project -s res://test/run_resonance_method_track_smoke.gd
-          else
-            echo "Smoke script missing; skipping"
-          fi
-        env:
-          GODOT_DISABLE_LEAK_CHECKS: 1
-
-      - name: Run plain animation-audio smoke
-        if: needs.changes.outputs.run_all_smokes == 'true'
-        run: |
-          if [ -f project/test/run_animation_audio_plain_smoke.gd ]; then
-            godot --headless --audio-driver Dummy --path project -s res://test/run_animation_audio_plain_smoke.gd
-          else
-            echo "Smoke script missing; skipping"
-          fi
-        env:
-          GODOT_DISABLE_LEAK_CHECKS: 1
-
-      - name: Run reverb-tail smoke
-        if: needs.changes.outputs.run_all_smokes == 'true'
-        run: |
-          if [ -f project/test/run_reverb_tail_smoke.gd ]; then
-            godot --headless --audio-driver Dummy --path project -s res://test/run_reverb_tail_smoke.gd
-          else
-            echo "Smoke script missing; skipping"
-          fi
-        env:
-          GODOT_DISABLE_LEAK_CHECKS: 1

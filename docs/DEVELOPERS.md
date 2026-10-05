@@ -270,7 +270,7 @@ Run via Godot with GUT addon or CLI (`project/run_tests.ps1` after sync).
 
 1. Update version in `src/resonance_constants.h` (NEXUS_RESONANCE_VERSION).
 2. Tag: `git tag v0.8.1`
-3. Push tag: triggers `.github/workflows/release.yml` which builds all platforms (Linux, Windows, macOS, Android, iOS) and creates a GitHub Release with a unified addon zip.
+3. Push tag: triggers `.github/workflows/release.yml` which builds all platforms (Linux x86_64/arm64, Windows, macOS, Android, iOS, visionOS) and creates a GitHub Release with a unified addon zip.
 
 
 
@@ -292,12 +292,48 @@ Cursor: Regel `[.cursor/rules/before-push.mdc](.cursor/rules/before-push.mdc)` -
 
 Cost-aware defaults: PR gates stay on Linux; push/merge to main does not re-run Tests; full multi-platform and CodeQL are manual.
 
-- **tests.yml** - Path-filtered **PR** gate (no run for materials/icons/docs-only; **not** on push/merge to main). **Linux C++** (format + Catch2 + strict clang-tidy subset) when `src/`** changes. **Windows C++** and **full smoke suite** only via `workflow_dispatch` (`run_windows` / `run_all_smokes`). **Godot** (GUT + lightning smoke) when C++ or `.gd` changes. GDScript-only: restore cached Linux `.so` (rebuild only on cache miss). Concurrency cancels superseded runs.
+- **tests.yml** - Path-filtered **PR** gate targeting main, master, or visionos (no run for materials/icons/docs-only; **not** on push/merge to main). **Linux C++** (format + Catch2 + strict clang-tidy subset) when `src/` or CI changes. **Windows C++** and **full smoke suite** only via `workflow_dispatch` (`run_windows` / `run_all_smokes`). **Godot** (GUT + lightning smoke) consumes the native build in the same job. GDScript-only: restore cached Linux `.so` (rebuild only on cache miss), then test in that job. Concurrency cancels superseded runs.
 - **gdscript-lint.yml** - `gdformat` / `gdlint` on changed `.gd` files only (PR + push).
-- **build.yml** - Multi-platform GDExtension binaries (**manual** `workflow_dispatch` **only**). Use before a release if you need artifacts without tagging.
-- **release.yml** - Full multi-platform build + GitHub Release on version tags (`v`*).
+- **build.yml** - Multi-platform GDExtension binaries (**manual** `workflow_dispatch` **only**). Platform bundles and SDK notices go to a run-owned draft Release without tagging.
+- **release.yml** - Full multi-platform build + GitHub Release on tags (`v*`, `fs-*`). Manual dispatch builds and verifies the same complete package but only writes to a throwaway draft Release; it never publishes or creates a tag.
 - **codeql.yml** - **Manual** `workflow_dispatch` **only** (needs Code Scanning / Advanced Security on the repo).
 - **stale.yml** - Weekly stale issue/PR cleanup.
+
+### No GitHub Actions artifacts
+
+Workflows, composite actions, and CI scripts must not use Actions artifact storage.
+Run `bash ci/scripts/check_no_actions_artifacts.sh` locally; test jobs run the same
+guard immediately after checkout. The guard is reused from Clancey/JumpChase
+commit `6307ede6e34d52370641f17b7659c9e6347b106a`. Existing SDK, SCons, and Linux
+binary caches are unchanged; no new cache is used as a handoff.
+
+Release build jobs upload `bin-*.tar.gz` bundles and `THIRDPARTY.md` with `gh release
+upload` to `ci-staging-<run-id>-<attempt>`. The packaging job uses `gh release
+download` against that exact draft, assembles all platforms, includes
+`STEAM_AUDIO_THIRDPARTY.md`, and runs the existing release verifier. Final assets
+remain `nexus_resonance-<tag>.zip` (or the commit SHA on dispatch) and
+`SHA256SUMS.txt`, with unchanged version tag conventions.
+
+Staging creation uses the draft Release API with an explicit commit SHA, not a
+Git tag push. `.github/scripts/release_staging.sh` rejects existing staging
+tags/releases and checks that no staging tag exists, the draft flag, release ID, bot author, repository/run/
+attempt/commit ownership marker, title, and target before every upload, download,
+or deletion. Duplicate asset names fail rather than overwrite. Drafts contain
+distributable build outputs only, never secrets or private diagnostics.
+
+Tag-push workflows remove their staging draft after the jobs finish. Manual Build
+and Release dispatches retain the draft for inspection, including on failure; its
+ID is linked in the staging job summary. Download with `gh release download
+ci-staging-<run-id>-<attempt> --repo Clancey/godot-nexus-resonance`. After inspection,
+set `GITHUB_REPOSITORY`, `GITHUB_RUN_ID`, `GITHUB_RUN_ATTEMPT`, `GITHUB_SHA`, and
+`STAGING_RELEASE_ID` to that run's exact values and run
+`bash .github/scripts/release_staging.sh delete` with an authorized `GH_TOKEN`.
+This deletes only the validated draft ID, never tags, Actions runs, or caches.
+Cancelled runs may need the same explicit cleanup; a later run never reuses them.
+
+macOS verification logs are tailed into the job log (with workflow commands
+disabled) and referenced in the step summary. Diagnostic binaries are no longer
+uploaded. The cold-cache Godot 4.7.2 import/lifetime harness is unchanged.
 
 
 

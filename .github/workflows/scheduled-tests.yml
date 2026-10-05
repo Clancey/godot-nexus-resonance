@@ -18,6 +18,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
+      - name: Reject Actions artifact storage
+        run: bash ci/scripts/check_no_actions_artifacts.sh
+
       - name: Prepare Godot CI project
         run: bash .github/scripts/prepare_godot_ci_project.sh
 

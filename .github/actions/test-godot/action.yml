@@ -1,0 +1,92 @@
+name: Test Godot with local native binaries
+description: Run GUT and smoke coverage in the job that builds or restores the extension.
+inputs:
+  run_all_smokes:
+    description: Run method-track, plain animation-audio and reverb-tail smokes too.
+    default: 'false'
+runs:
+  using: composite
+  steps:
+    - name: Prepare Godot CI project
+      shell: bash
+      run: bash .github/scripts/prepare_godot_ci_project.sh
+
+    - name: Install GUT test framework
+      shell: bash
+      run: |
+        GUT_VERSION="9.6.0"
+        curl -fsSL -o /tmp/gut.zip "https://github.com/bitwes/Gut/archive/refs/tags/v${GUT_VERSION}.zip"
+        unzip -qo /tmp/gut.zip -d /tmp/gut
+        mkdir -p project/addons/gut
+        cp -r /tmp/gut/Gut-${GUT_VERSION}/addons/gut/* project/addons/gut/
+        rm -rf /tmp/gut /tmp/gut.zip
+
+    - name: Setup Godot 4.6
+      uses: chickensoft-games/setup-godot@v2
+      with:
+        version: "4.6.0"
+        use-dotnet: false
+
+    - name: Import project
+      shell: bash
+      run: godot --headless --path project --import
+      env:
+        GODOT_DISABLE_LEAK_CHECKS: 1
+
+    - name: Run GUT tests
+      shell: bash
+      run: |
+        if [ -d project/test/unit ] && ls project/test/unit/*.gd >/dev/null 2>&1; then
+          godot --headless -d --audio-driver Dummy --path project -s addons/gut/gut_cmdln.gd -gdir=res://test/unit -gexit
+        else
+          echo "No GUT tests under project/test/unit; skipping"
+        fi
+      env:
+        GODOT_DISABLE_LEAK_CHECKS: 1
+
+    - name: Run lightning smoke
+      shell: bash
+      run: |
+        if [ -f project/test/run_lightning_smoke.gd ]; then
+          godot --headless --audio-driver Dummy --path project -s res://test/run_lightning_smoke.gd
+        else
+          echo "Smoke script missing; skipping"
+        fi
+      env:
+        GODOT_DISABLE_LEAK_CHECKS: 1
+
+    - name: Run method-track smoke
+      if: inputs.run_all_smokes == 'true'
+      shell: bash
+      run: |
+        if [ -f project/test/run_resonance_method_track_smoke.gd ]; then
+          godot --headless --audio-driver Dummy --path project -s res://test/run_resonance_method_track_smoke.gd
+        else
+          echo "Smoke script missing; skipping"
+        fi
+      env:
+        GODOT_DISABLE_LEAK_CHECKS: 1
+
+    - name: Run plain animation-audio smoke
+      if: inputs.run_all_smokes == 'true'
+      shell: bash
+      run: |
+        if [ -f project/test/run_animation_audio_plain_smoke.gd ]; then
+          godot --headless --audio-driver Dummy --path project -s res://test/run_animation_audio_plain_smoke.gd
+        else
+          echo "Smoke script missing; skipping"
+        fi
+      env:
+        GODOT_DISABLE_LEAK_CHECKS: 1
+
+    - name: Run reverb-tail smoke
+      if: inputs.run_all_smokes == 'true'
+      shell: bash
+      run: |
+        if [ -f project/test/run_reverb_tail_smoke.gd ]; then
+          godot --headless --audio-driver Dummy --path project -s res://test/run_reverb_tail_smoke.gd
+        else
+          echo "Smoke script missing; skipping"
+        fi
+      env:
+        GODOT_DISABLE_LEAK_CHECKS: 1
