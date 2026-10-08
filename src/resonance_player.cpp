@@ -1219,6 +1219,8 @@ void ResonancePlayer::cleanup_shared_reflection() {
     if (shared_refl_context_ && shared_refl_accum_.data)
         iplAudioBufferFree(shared_refl_context_, &shared_refl_accum_);
     memset(&shared_refl_accum_, 0, sizeof(shared_refl_accum_));
+    if (shared_refl_context_)
+        iplContextRelease(&shared_refl_context_);
     shared_refl_context_ = nullptr;
     shared_refl_frame_size_ = 0;
     shared_reflection_inited_ = false;
@@ -1248,7 +1250,7 @@ void ResonancePlayer::ensure_shared_reflection_on_main(ResonanceServer* srv) {
         shared_reflection_.cleanup();
         return;
     }
-    shared_refl_context_ = ctx;
+    shared_refl_context_ = iplContextRetain(ctx);
     shared_refl_frame_size_ = frame;
     shared_reflection_inited_ = true;
 }
