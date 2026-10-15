@@ -1571,12 +1571,17 @@ void ResonancePlayer::set_stream(const Ref<AudioStream>& p_stream) {
     AudioStreamPlayer3D::set_stream(internal_stream);
 }
 
+Ref<AudioStream> ResonancePlayer::_current_logical_stream() const {
+    const Ref<AudioStream> engine_s = AudioStreamPlayer3D::get_stream();
+    if (internal_stream.is_valid() && engine_s == internal_stream && logical_stream_.is_valid())
+        return logical_stream_;
+    return engine_s;
+}
+
 Ref<AudioStream> ResonancePlayer::get_stream() const {
     if (!player_config.is_valid())
         return AudioStreamPlayer3D::get_stream();
-    if (logical_stream_.is_valid())
-        return logical_stream_;
-    return AudioStreamPlayer3D::get_stream();
+    return _current_logical_stream();
 }
 
 Ref<AudioStream> ResonancePlayer::get_inner_stream() const {
@@ -1826,7 +1831,7 @@ void ResonancePlayer::set_player_config(const Ref<Resource>& p_config) {
     config_cache_valid_ = false;
     if (had_config && !player_config.is_valid()) {
         set_process(false);
-        const Ref<AudioStream> logical = logical_stream_;
+        const Ref<AudioStream> logical = _current_logical_stream();
         internal_stream.unref();
         logical_stream_.unref();
         AudioStreamPlayer3D::set_stream(logical);

@@ -589,6 +589,8 @@ class ResonancePlayer : public AudioStreamPlayer3D {
     bool show_directivity_gizmo_ = false;
 
     void _update_stream_setup(); // Ensures the internal stream is set up correctly
+    // User stream: the engine stream when it was replaced via the inherited setter, else logical_stream_.
+    Ref<AudioStream> _current_logical_stream() const;
     /// With player_config: disable Godot ASP3D attenuation/max_distance so Steam owns distance (also after runtime config assign).
     void _apply_steam_mode_asp3d_guards();
     /// Refresh host gain cache from volume_db/max_db (applied to dry input before Steam DSP).
