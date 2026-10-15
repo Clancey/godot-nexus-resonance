@@ -33,7 +33,7 @@ func after_each() -> void:
 	if _player.player_config != null:
 		_player.player_config = null
 	if _player.playing or _player.is_playing():
-		_player.stop()
+		_player.stop_stream()
 	await wait_process_frames(2)
 
 
@@ -91,10 +91,10 @@ func test_pitch_scale_roundtrip_and_instrumentation() -> void:
 
 func test_playing_via_play_and_stop() -> void:
 	assert_false(_player.playing, "starts stopped")
-	_player.play()
+	_player.play_stream()
 	await wait_process_frames(2)
 	assert_true(_player.playing or _player.is_playing(), "play() should mark the player playing")
-	_player.stop()
+	_player.stop_stream()
 	# Soft-stop drains on the audio thread; Dummy driver may need the main-thread watchdog
 	# (max_reverb_duration + 0.5s). Poll with process frames.
 	var settled := false
@@ -114,11 +114,11 @@ func test_autoplay_starts_on_ready() -> void:
 	add_child_autoqfree(p)
 	await wait_process_frames(3)
 	assert_true(p.playing or p.is_playing(), "autoplay with player_config should start playback in _ready")
-	p.stop()
+	p.stop_stream()
 
 
 func test_stream_paused_pauses_and_resumes() -> void:
-	_player.play()
+	_player.play_stream()
 	await wait_process_frames(2)
 	assert_true(_player.is_playing() or _player.playing)
 
@@ -136,11 +136,11 @@ func test_max_polyphony_property_and_overlapping_voices() -> void:
 	_player.max_polyphony = 3
 	assert_eq(_player.max_polyphony, 3)
 
-	_player.play()
+	_player.play_stream()
 	await wait_process_frames(1)
-	_player.play()
+	_player.play_stream()
 	await wait_process_frames(1)
-	_player.play()
+	_player.play_stream()
 	await wait_process_frames(3)
 
 	var inst: Dictionary = _player.get_audio_instrumentation()

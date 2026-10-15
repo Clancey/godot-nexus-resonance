@@ -48,7 +48,7 @@ func _spawn_playing() -> ResonancePlayer:
 	player.player_config = _config
 	player.stream = _stream
 	add_child(player)
-	player.play()
+	player.play_stream()
 	return player
 
 
@@ -62,7 +62,7 @@ func test_free_right_after_play_does_not_abort() -> void:
 			if round_index % 2 == 0:
 				player.free()
 			else:
-				player.stop()
+				player.stop_stream()
 				player.queue_free()
 	await wait_process_frames(10)
 	pass_test("players freed after play() released their voices without aborting")

@@ -53,8 +53,8 @@ func _run() -> void:
 			player.stream = null
 		elif iteration % 3 == 2:
 			player.max_polyphony = 3
-			player.play()
-			player.play()
+			player.play_stream()
+			player.play_stream()
 			await process_frame
 		player.free()
 		held = null
