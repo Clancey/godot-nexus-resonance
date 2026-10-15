@@ -45,3 +45,17 @@ func test_clearing_config_restores_inherited_stream_assignment() -> void:
 	player.stream = second
 	player.player_config = null
 	assert_eq(player.stream, second)
+
+
+func test_null_stream_is_not_reported_as_the_wrapper() -> void:
+	var player := _spawn_wrapped(_tone())
+	await wait_process_frames(1)
+
+	player.stream = null
+	player.play_stream()
+	player.stop_stream()
+	assert_eq(player.stream.get_class(), "ResonanceStream", "play_stream rewraps the null stream")
+	assert_null(player.get_inner_stream())
+
+	player.player_config = null
+	assert_null(player.stream)

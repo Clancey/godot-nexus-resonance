@@ -1573,7 +1573,7 @@ void ResonancePlayer::set_stream(const Ref<AudioStream>& p_stream) {
 
 Ref<AudioStream> ResonancePlayer::_current_logical_stream() const {
     const Ref<AudioStream> engine_s = AudioStreamPlayer3D::get_stream();
-    if (internal_stream.is_valid() && engine_s == internal_stream && logical_stream_.is_valid())
+    if (internal_stream.is_valid() && engine_s == internal_stream)
         return logical_stream_;
     return engine_s;
 }
