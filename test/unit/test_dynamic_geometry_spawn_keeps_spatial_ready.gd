@@ -43,7 +43,7 @@ func before_each() -> void:
 	_root.add_child(_player)
 
 	await wait_process_frames(4)
-	_player.play()
+	_player.play_stream()
 	await wait_process_frames(2)
 
 
@@ -53,7 +53,7 @@ func after_each() -> void:
 	if _player.player_config != null:
 		_player.player_config = null
 	if _player.playing or _player.is_playing():
-		_player.stop()
+		_player.stop_stream()
 	await wait_process_frames(2)
 
 

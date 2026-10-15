@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **ResonancePlayer play/stop API (Breaking)** - `ResonancePlayer` no longer binds `play`, `stop`, `set_stream`, `get_stream`, or the `ATTENUATION_*` / `AttenuationMode` constants. `AudioStreamPlayer3D` already has these names, and Godot 4.8 rejects an extension class that rebinds an inherited name: the bindings were dropped with `already has member` errors on visionOS, and registration crashed on Linux arm64. Call `play_stream()` and the new `stop_stream()` for Resonance playback (stream wrapping, Steam source sync, reverb-split start, soft-stop with tail drain). The inherited `play()` / `stop()` act like a plain `AudioStreamPlayer3D`. Use `get_inner_stream()` to read the user stream. Use `ResonancePlayerConfig.attenuation_mode` integers (0 Inverse, 1 Linear, 2 Curve, 3 Disabled) instead of the removed constants.
+
 ### Fixed
 
 - **Default HRTF sample rate** - The embedded default HRTF accepts only 24000, 44100, and 48000 Hz; an unsupported host mix rate such as 96000 reports that explicitly instead of the SOFA SimpleFreeFieldHRIR message.

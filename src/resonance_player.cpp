@@ -44,6 +44,14 @@
 
 namespace {
 thread_local int tls_convolution_apply_depth = 0;
+
+// Serialises the voice <-> player link. AudioServer can free a voice after the node that played it (the node is
+// freed within a few frames of play()); without this the voice used the dead player (mutex abort).
+// Lock order: this mutex, then a player's internal_playbacks_mutex_ / voice_source_reclaim_mutex_.
+std::mutex& owner_link_mutex() {
+    static std::mutex m;
+    return m;
+}
 } // namespace
 
 using namespace godot;
@@ -113,17 +121,25 @@ ResonanceStreamPlayback::~ResonanceStreamPlayback() {
     convolution_blocked_.store(true, std::memory_order_release);
     const int32_t handle = voice_source_handle_.exchange(-1, std::memory_order_acq_rel);
     const uint32_t epoch = voice_source_epoch_.exchange(0, std::memory_order_acq_rel);
-    ResonancePlayer* owner = owner_player_;
-    if (owner)
-        owner->internal_unregister_playback(this);
+    {
+        // Out of the mix snapshot first; stays owned so a dying player still clears the link below.
+        std::lock_guard<std::mutex> link(owner_link_mutex());
+        if (owner_player_)
+            owner_player_->internal_unregister_playback(this);
+    }
     // The applying thread must not wait on itself. Main waits until that Apply returns.
     if (tls_convolution_apply_depth == 0) {
         while (convolution_apply_depth_.load(std::memory_order_acquire) > 0)
             std::this_thread::yield();
     }
     _cleanup_steam_audio();
-    if (owner && handle >= 0)
-        owner->internal_reclaim_voice_source(handle, epoch);
+    std::lock_guard<std::mutex> link(owner_link_mutex());
+    if (owner_player_) {
+        if (handle >= 0)
+            owner_player_->internal_reclaim_voice_source(handle, epoch);
+        owner_player_->internal_untrack_owned_playback(this);
+        owner_player_ = nullptr;
+    }
 }
 
 bool ResonanceStreamPlayback::convolution_try_enter() {
@@ -351,10 +367,13 @@ Ref<AudioStreamPlayback> ResonanceStream::_instantiate_playback() const {
 }
 
 void ResonanceStreamPlayback::set_owner_player(ResonancePlayer* p_player) {
+    std::lock_guard<std::mutex> link(owner_link_mutex());
     if (owner_player_ == p_player)
         return;
-    if (owner_player_)
+    if (owner_player_) {
         owner_player_->internal_unregister_playback(this);
+        owner_player_->internal_untrack_owned_playback(this);
+    }
     owner_player_ = p_player;
     if (owner_player_)
         owner_player_->internal_track_owned_playback(this);
@@ -514,16 +533,14 @@ void ResonancePlayer::_exit_tree() {
 }
 
 ResonancePlayer::~ResonancePlayer() {
-    std::vector<ResonanceStreamPlayback*> copy;
-    {
-        std::lock_guard<std::mutex> lock(internal_playbacks_mutex_);
-        copy.swap(owned_playbacks_);
-        internal_playbacks_.clear();
-    }
-    for (ResonanceStreamPlayback* p : copy) {
+    std::lock_guard<std::mutex> link(owner_link_mutex());
+    for (ResonanceStreamPlayback* p : owned_playbacks_) {
         if (p)
             p->internal_orphan_owner_player();
     }
+    owned_playbacks_.clear();
+    std::lock_guard<std::mutex> lock(internal_playbacks_mutex_);
+    internal_playbacks_.clear();
 }
 
 void ResonancePlayer::internal_publish_playback_snapshot() {
@@ -568,17 +585,21 @@ void ResonancePlayer::internal_unregister_playback(ResonanceStreamPlayback* p) {
         std::lock_guard<std::mutex> lock(internal_playbacks_mutex_);
         const size_t before = internal_playbacks_.size();
         internal_playbacks_.erase(std::remove(internal_playbacks_.begin(), internal_playbacks_.end(), p), internal_playbacks_.end());
-        owned_playbacks_.erase(std::remove(owned_playbacks_.begin(), owned_playbacks_.end(), p), owned_playbacks_.end());
         if (internal_playbacks_.size() < before)
             playback_count_.fetch_sub(1, std::memory_order_release);
     }
     internal_publish_playback_snapshot();
 }
 
+// Caller holds owner_link_mutex().
 void ResonancePlayer::internal_track_owned_playback(ResonanceStreamPlayback* p) {
-    std::lock_guard<std::mutex> lock(internal_playbacks_mutex_);
     if (std::find(owned_playbacks_.begin(), owned_playbacks_.end(), p) == owned_playbacks_.end())
         owned_playbacks_.push_back(p);
+}
+
+// Caller holds owner_link_mutex().
+void ResonancePlayer::internal_untrack_owned_playback(ResonanceStreamPlayback* p) {
+    owned_playbacks_.erase(std::remove(owned_playbacks_.begin(), owned_playbacks_.end(), p), owned_playbacks_.end());
 }
 
 void ResonancePlayer::internal_reclaim_voice_source(int32_t handle, uint32_t epoch) {
@@ -1198,6 +1219,8 @@ void ResonancePlayer::cleanup_shared_reflection() {
     if (shared_refl_context_ && shared_refl_accum_.data)
         iplAudioBufferFree(shared_refl_context_, &shared_refl_accum_);
     memset(&shared_refl_accum_, 0, sizeof(shared_refl_accum_));
+    if (shared_refl_context_)
+        iplContextRelease(&shared_refl_context_);
     shared_refl_context_ = nullptr;
     shared_refl_frame_size_ = 0;
     shared_reflection_inited_ = false;
@@ -1227,7 +1250,7 @@ void ResonancePlayer::ensure_shared_reflection_on_main(ResonanceServer* srv) {
         shared_reflection_.cleanup();
         return;
     }
-    shared_refl_context_ = ctx;
+    shared_refl_context_ = iplContextRetain(ctx);
     shared_refl_frame_size_ = frame;
     shared_reflection_inited_ = true;
 }
@@ -1548,12 +1571,17 @@ void ResonancePlayer::set_stream(const Ref<AudioStream>& p_stream) {
     AudioStreamPlayer3D::set_stream(internal_stream);
 }
 
+Ref<AudioStream> ResonancePlayer::_current_logical_stream() const {
+    const Ref<AudioStream> engine_s = AudioStreamPlayer3D::get_stream();
+    if (internal_stream.is_valid() && engine_s == internal_stream)
+        return logical_stream_;
+    return engine_s;
+}
+
 Ref<AudioStream> ResonancePlayer::get_stream() const {
     if (!player_config.is_valid())
         return AudioStreamPlayer3D::get_stream();
-    if (logical_stream_.is_valid())
-        return logical_stream_;
-    return AudioStreamPlayer3D::get_stream();
+    return _current_logical_stream();
 }
 
 Ref<AudioStream> ResonancePlayer::get_inner_stream() const {
@@ -1803,7 +1831,7 @@ void ResonancePlayer::set_player_config(const Ref<Resource>& p_config) {
     config_cache_valid_ = false;
     if (had_config && !player_config.is_valid()) {
         set_process(false);
-        const Ref<AudioStream> logical = logical_stream_;
+        const Ref<AudioStream> logical = _current_logical_stream();
         internal_stream.unref();
         logical_stream_.unref();
         AudioStreamPlayer3D::set_stream(logical);

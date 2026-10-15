@@ -53,7 +53,7 @@ func _ready() -> void:
 	_player.stream = _make_looping_tone_stream()
 	_player.position = Vector3(0, 1, -1.5)
 	add_child(_player)
-	_player.play()
+	_player.play_stream()
 
 	_set_status("Playing tone… waiting %.1fs then spawning ResonanceDynamicGeometry" % spawn_delay_sec)
 

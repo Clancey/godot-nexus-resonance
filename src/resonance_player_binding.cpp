@@ -24,13 +24,14 @@ void ResonanceReverbStream::_bind_methods() {
 }
 
 void ResonancePlayer::_bind_methods() {
-    ClassDB::bind_method(D_METHOD("set_stream", "stream"), &ResonancePlayer::set_stream);
-    ClassDB::bind_method(D_METHOD("get_stream"), &ResonancePlayer::get_stream);
+    // Never bind a name AudioStreamPlayer3D already has (set_stream, get_stream, play, stop,
+    // ATTENUATION_*): Godot 4.8's GDType rejects inherited member names, which drops the
+    // binding on some platforms and crashes registration on others. The Resonance behavior
+    // is exposed under play_stream / stop_stream / play_animation_audio_clip instead.
     ClassDB::bind_method(D_METHOD("get_inner_stream"), &ResonancePlayer::get_inner_stream);
     ClassDB::bind_method(D_METHOD("get_inner_stream_playback"), &ResonancePlayer::get_inner_stream_playback);
-    ClassDB::bind_method(D_METHOD("play", "from_position"), &ResonancePlayer::play, DEFVAL(0.0f));
-    ClassDB::bind_method(D_METHOD("stop"), &ResonancePlayer::stop);
     ClassDB::bind_method(D_METHOD("play_stream", "from_position"), &ResonancePlayer::play_stream, DEFVAL(0.0));
+    ClassDB::bind_method(D_METHOD("stop_stream"), &ResonancePlayer::stop);
     ClassDB::bind_method(D_METHOD("play_animation_audio_clip", "stream", "from_position"), &ResonancePlayer::play_animation_audio_clip,
                          DEFVAL(0.0f));
     ClassDB::bind_method(D_METHOD("_deferred_try_ensure_source_after_config"), &ResonancePlayer::_deferred_try_ensure_source_after_config);
@@ -70,9 +71,4 @@ void ResonancePlayer::_bind_methods() {
     ADD_GROUP("Debug", "");
     ADD_PROPERTY(PropertyInfo(Variant::BOOL, "exclude_from_debug"), "set_exclude_from_debug", "get_exclude_from_debug");
     ADD_PROPERTY(PropertyInfo(Variant::BOOL, "show_directivity_gizmo"), "set_show_directivity_gizmo", "get_show_directivity_gizmo");
-
-    BIND_ENUM_CONSTANT(ATTENUATION_INVERSE);
-    BIND_ENUM_CONSTANT(ATTENUATION_LINEAR);
-    BIND_ENUM_CONSTANT(ATTENUATION_CUSTOM_CURVE);
-    BIND_ENUM_CONSTANT(ATTENUATION_DISABLED);
 }

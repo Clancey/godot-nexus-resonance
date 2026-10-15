@@ -55,7 +55,10 @@ void ResonanceReflectionProcessor::initialize(IPLContext p_context, int p_sample
         dur = 10.0f;
     effect_ir_duration_sec_ = dur;
 
-    context = p_context;
+    // Own a reference so effects and buffers can be freed after the server releases its context.
+    if (context)
+        iplContextRelease(&context);
+    context = iplContextRetain(p_context);
     frame_size = p_frame_size;
     sample_rate = p_sample_rate;
     reflection_type = p_reflection_type;
@@ -148,6 +151,7 @@ void ResonanceReflectionProcessor::cleanup() {
             iplAudioBufferFree(context, &sa_air_absorption_in_buffer);
         if (sa_air_absorption_out_buffer.data)
             iplAudioBufferFree(context, &sa_air_absorption_out_buffer);
+        iplContextRelease(&context);
     }
     memset(&sa_mono_buffer, 0, sizeof(sa_mono_buffer));
     memset(&sa_temp_out_buffer, 0, sizeof(sa_temp_out_buffer));

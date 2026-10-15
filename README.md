@@ -17,7 +17,7 @@ Steam Audio integration for Godot 4: physics-based occlusion, reverb, and pathin
 
 5. **Bake Probes**: Select the ResonanceProbeVolume → use "Bake Probes" in the 3D viewport toolbar.
 
-6. **Replace AudioStreamPlayer3D with ResonancePlayer** and assign a **ResonancePlayerConfig** on `player_config` for sources that need occlusion/reverb. With a config, Steam owns distance/spatialization; Godot’s 3D attenuation knobs are hidden. Without a config, ResonancePlayer behaves like a plain AudioStreamPlayer3D.
+6. **Replace AudioStreamPlayer3D with ResonancePlayer** and assign a **ResonancePlayerConfig** on `player_config` for sources that need occlusion/reverb. With a config, Steam owns distance/spatialization; Godot’s 3D attenuation knobs are hidden. Without a config, ResonancePlayer behaves like a plain AudioStreamPlayer3D. Start and stop playback from code with `play_stream()` / `stop_stream()`. The inherited `play()` / `stop()` skip the Resonance setup and soft-stop tail.
 
 7. **ResonanceRuntime** node handles listener updates and init. Assign a **ResonanceRuntimeConfig** resource for quality settings. Structure is aligned with Steam Audio Settings for compatibility.
 
