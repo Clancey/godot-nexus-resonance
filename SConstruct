@@ -105,6 +105,8 @@ elif env["platform"] == "macos":
 
 elif env["platform"] == "android":
     env.Replace(SHLIBSUFFIX=".so")
+    # Keep ELF load segments compatible with Android's 16 KiB page-size devices.
+    env.Append(LINKFLAGS=["-Wl,-z,max-page-size=16384", "-Wl,-z,common-page-size=16384"])
     arch_to_steam = {"arm64": "android-armv8", "x86_64": "android-x64", "arm32": "android-armv7", "x86_32": "android-x86"}
     steam_arch = arch_to_steam.get(env["arch"], "android-armv8")
     env.Append(LIBPATH=[os.path.join(steam_audio_lib, steam_arch)])
