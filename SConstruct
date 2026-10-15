@@ -28,6 +28,16 @@ if (
         cross_flags.append("--sysroot=" + os.path.abspath(sysroot))
     env.Append(CCFLAGS=cross_flags, LINKFLAGS=cross_flags)
     Export("env")
+elif (
+    ARGUMENTS.get("platform") == "linux"
+    and ARGUMENTS.get("arch", "x86_64") == "x86_64"
+    and os.environ.get("LINUX_X86_64_SYSROOT")
+):
+    # Release builds link against a Debian 11 sysroot (glibc 2.31) with clang (use_llvm=yes).
+    env = Environment(tools=["default"], PLATFORM="")
+    sysroot_flags = ["--target=x86_64-linux-gnu", "--sysroot=" + os.path.abspath(os.environ["LINUX_X86_64_SYSROOT"])]
+    env.Append(CCFLAGS=sysroot_flags, LINKFLAGS=sysroot_flags + ["-fuse-ld=lld"])
+    Export("env")
 
 env = SConscript("src/lib/godot-cpp/SConstruct")
 

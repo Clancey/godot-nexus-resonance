@@ -95,12 +95,29 @@ jobs:
           cp src/lib/steamaudio/lib/android-armv8/libphonon.so "$BIN/android/arm64-v8a/"
           cp src/lib/steamaudio/lib/android-x64/libphonon.so "$BIN/android/x86_64/"
 
+      - name: Create Linux x86_64 sysroot (glibc 2.31)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang lld
+          python3 scripts/make_linux_arm64_sysroot.py "$GITHUB_WORKSPACE/sysroot-bullseye-amd64" amd64
+
       - name: Build Linux
         env:
           SCONS_CACHE: ${{ github.workspace }}/.scons-cache
+          LINUX_X86_64_SYSROOT: ${{ github.workspace }}/sysroot-bullseye-amd64
         run: |
-          scons platform=linux target=template_debug build_tests=0 -j$(nproc)
-          scons platform=linux target=template_release build_tests=0 -j$(nproc)
+          scons platform=linux arch=x86_64 use_llvm=yes use_static_cpp=yes target=template_debug build_tests=0 -j$(nproc)
+          scons platform=linux arch=x86_64 use_llvm=yes use_static_cpp=yes target=template_release build_tests=0 -j$(nproc)
+
+      - name: Verify Linux x86_64 glibc ceiling
+        run: |
+          BIN=addons/nexus_resonance/bin/linux
+          for f in "$BIN"/*.so; do
+            file "$f" | grep "x86-64"
+          done
+          MAX=$(objdump -T "$BIN"/*.so | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1)
+          echo "Highest glibc requirement: $MAX"
+          python3 -c "assert tuple(map(int, '$MAX'.split('_')[1].split('.'))) <= (2,31)"
 
       - name: Build Android (arm64)
         env:

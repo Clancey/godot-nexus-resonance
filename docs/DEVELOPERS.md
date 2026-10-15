@@ -277,6 +277,19 @@ LINUX_ARM64_SYSROOT="$PWD/build/sysroot-bullseye-arm64" \
 Output: `bin/linux-arm64/libnexus_resonance.so`. Ship the SDK's matching
 `libphonon.so` beside it. Cross-compilation does not verify execution on ARM Linux.
 
+### Linux x86_64 release builds
+
+The Release job builds x86_64 against a Debian 11 amd64 sysroot and rejects any
+requirement above glibc 2.31. Without `LINUX_X86_64_SYSROOT`, builds use the
+host's glibc.
+
+```bash
+python3 scripts/make_linux_arm64_sysroot.py build/sysroot-bullseye-amd64 amd64
+LINUX_X86_64_SYSROOT="$PWD/build/sysroot-bullseye-amd64" \
+  scons platform=linux arch=x86_64 use_llvm=yes use_static_cpp=yes \
+  target=template_release build_tests=0
+```
+
 ## Test
 
 Unit tests (GUT) live in tracked `[test/unit/](../test/unit/)` and are synced into `project/test/` by `[.github/scripts/prepare_godot_ci_project.sh](../.github/scripts/prepare_godot_ci_project.sh)` (or copy locally before running):
