@@ -31,6 +31,33 @@ nexus-resonance/
 
 
 
+## Android 16 KiB native builds
+
+Android shared libraries are linked with explicit 16 KiB maximum and common page
+sizes. Use NDK r28 or newer and validate **every** packaged native library,
+including the separately supplied Steam Audio `libphonon.so`.
+
+With the pinned `godot-cpp` submodule and Steam Audio 4.8.1 SDK already available
+locally, build arm64 without invoking the Makefile's SDK download target:
+
+```sh
+scons platform=android arch=arm64 target=template_release build_tests=0 \
+  ANDROID_HOME="$HOME/Library/Android/sdk" ndk_version=28.2.13676358 \
+  android_api_level=24
+```
+
+This produces `addons/nexus_resonance/bin/android/arm64-v8a/libnexus_resonance.so`.
+Package the matching SDK's `lib/android-armv8/libphonon.so` beside it, as required
+by the addon manifest. The Android build does not need the Catch2, pffft, or
+libmysofa submodules when `build_tests=0`.
+
+Use the selected NDK's `toolchains/llvm/prebuilt/<host>/bin/llvm-readelf -h -l -d`
+on both libraries. Require ELF64/AArch64, each `PT_LOAD` alignment at least
+`0x4000`, and each load offset congruent to its virtual address modulo `0x4000`.
+Check `DT_NEEDED` against the packaged libraries and Android system libraries;
+if using a shared C++ runtime, validate and package that library too. ELF checks
+do not replace APK/AAB ZIP alignment or loading/audio checks on a 16 KiB device.
+
 ## Local addon link (Windows)
 
 Prefer a directory junction so Godot and the IDE share one tree (avoids Cursor/LSP `Class "…" hides a global script class` when both `addons/` SoT and `project/addons/` copies define the same `class_name`):
@@ -249,6 +276,19 @@ LINUX_ARM64_SYSROOT="$PWD/build/sysroot-bullseye-arm64" \
 
 Output: `bin/linux-arm64/libnexus_resonance.so`. Ship the SDK's matching
 `libphonon.so` beside it. Cross-compilation does not verify execution on ARM Linux.
+
+### Linux x86_64 release builds
+
+The Release job builds x86_64 against a Debian 11 amd64 sysroot and rejects any
+requirement above glibc 2.31. Without `LINUX_X86_64_SYSROOT`, builds use the
+host's glibc.
+
+```bash
+python3 scripts/make_linux_arm64_sysroot.py build/sysroot-bullseye-amd64 amd64
+LINUX_X86_64_SYSROOT="$PWD/build/sysroot-bullseye-amd64" \
+  scons platform=linux arch=x86_64 use_llvm=yes use_static_cpp=yes \
+  target=template_release build_tests=0
+```
 
 ## Test
 

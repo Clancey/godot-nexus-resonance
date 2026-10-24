@@ -5,29 +5,16 @@
 	</brief_description>
 	<description>
 		Extends [AudioStreamPlayer3D]. Assign a [url=#ResonancePlayerConfig]ResonancePlayerConfig[/url] to [member player_config] for Steam occlusion, distance, air absorption, directivity, reflections, and pathing. Without a config this node is a plain [AudioStreamPlayer3D].
-		With a config, Godot spatial knobs are hidden and Godot attenuation is forced off; [code]volume_db[/code], [code]max_db[/code], [code]pitch_scale[/code], [code]max_polyphony[/code], and the play API still apply. Overlapping voices share one Steam source at this node. See docs/DEVELOPERS.md for the ASP3D ownership split.
-		[method get_stream] is your user [AudioStream]; the engine plays an internal wrapper. AnimationPlayer Audio Clips stay dry unless you use [member convert_anim_audio_runtime] or [method play_animation_audio_clip]. Steam fields live on the config; pathing volume stays on [member pathing_probe_volume].
+		With a config, Godot spatial knobs are hidden and Godot attenuation is forced off; [code]volume_db[/code], [code]max_db[/code], [code]pitch_scale[/code], [code]max_polyphony[/code], and the play API ([method play_stream] / [method stop_stream]) still apply. Overlapping voices share one Steam source at this node. See docs/DEVELOPERS.md for the ASP3D ownership split.
+		Start and stop playback with [method play_stream] and [method stop_stream]; the inherited [method AudioStreamPlayer3D.play] and [method AudioStreamPlayer3D.stop] bypass Resonance processing. [method get_inner_stream] is your user [AudioStream]; the engine plays an internal wrapper. AnimationPlayer Audio Clips stay dry unless you use [member convert_anim_audio_runtime] or [method play_animation_audio_clip]. Steam fields live on the config; pathing volume stays on [member pathing_probe_volume].
 	</description>
 	<tutorials>
 	</tutorials>
 	<methods>
-		<method name="set_stream">
-			<return type="void" />
-			<param index="0" name="stream" type="AudioStream" />
-			<description>
-				With [member player_config], stores the user [AudioStream] and drives an internal Resonance wrapper. Without a config, sets the plain [AudioStreamPlayer3D] stream slot.
-			</description>
-		</method>
-		<method name="get_stream" qualifiers="const">
-			<return type="AudioStream" />
-			<description>
-				With [member player_config], returns the user [AudioStream] (not the internal wrapper). Without a config, returns the [AudioStreamPlayer3D] stream.
-			</description>
-		</method>
 		<method name="get_inner_stream" qualifiers="const">
 			<return type="AudioStream" />
 			<description>
-				Same as [method get_stream]. Convenience for VOIP, mic, and generator scripts.
+				With [member player_config], returns the user [AudioStream] (not the internal Resonance wrapper that [member AudioStreamPlayer3D.stream] holds once the player is ready or has played). Without a config, returns the [AudioStreamPlayer3D] stream. Use this for VOIP, mic, and generator scripts.
 			</description>
 		</method>
 		<method name="get_inner_stream_playback">
@@ -36,18 +23,11 @@
 				Returns the decoder [AudioStreamPlayback] under the Resonance wrapper. Without [member player_config], same as [method AudioStreamPlayer3D.get_stream_playback].
 			</description>
 		</method>
-		<method name="play">
-			<return type="void" />
-			<param index="0" name="from_position" type="float" default="0.0" />
-			<description>
-				Starts playback from [param from_position]. With [member player_config], wraps the stream, ensures a Steam source (retries if the server was not ready), and starts the reverb-split child when needed.
-			</description>
-		</method>
 		<method name="play_stream">
 			<return type="void" />
 			<param index="0" name="from_position" type="float" default="0.0" />
 			<description>
-				Calls [method play] with the same [param from_position]. Alias for existing projects and tutorials.
+				Starts playback from [param from_position]. With [member player_config], wraps the current [member AudioStreamPlayer3D.stream] in the Resonance stream (also after the stream was replaced), ensures a Steam source (retries if the server was not ready), and starts the reverb-split child when needed. Use this instead of [method AudioStreamPlayer3D.play], which plays the stream as a plain [AudioStreamPlayer3D] without these steps.
 			</description>
 		</method>
 		<method name="play_animation_audio_clip">
@@ -55,13 +35,13 @@
 			<param index="0" name="stream" type="AudioStream" />
 			<param index="1" name="from_position" type="float" default="0.0" />
 			<description>
-				Sets [code]stream[/code] and calls [method play]. Use from AnimationPlayer method tracks, or after [member convert_anim_audio_runtime] rewrites Audio Clip tracks.
+				Sets [param stream] as the user stream and starts it like [method play_stream]. Use from AnimationPlayer method tracks, or after [member convert_anim_audio_runtime] rewrites Audio Clip tracks.
 			</description>
 		</method>
-		<method name="stop">
+		<method name="stop_stream">
 			<return type="void" />
 			<description>
-				Stops playback. With [member player_config], soft-stops dry input so reverb/pathing tails can drain; without a config (or in the editor), hard-stops like [AudioStreamPlayer3D].
+				Stops playback. With [member player_config], soft-stops dry input so reverb/pathing tails can drain; without a config (or in the editor), hard-stops like [AudioStreamPlayer3D]. Use this instead of [method AudioStreamPlayer3D.stop], which always hard-stops and cuts the tail.
 			</description>
 		</method>
 		<method name="set_reverb_split_output">
@@ -148,18 +128,4 @@
 			Shows the directivity wireframe in the editor viewport and at runtime (forward [code]-Z[/code]). Shape follows [member player_config] directivity fields; independent of the debug HUD.
 		</member>
 	</members>
-	<constants>
-		<constant name="ATTENUATION_INVERSE" value="0" enum="AttenuationMode">
-			Inverse distance on Direct ([code]min/distance[/code], [member ResonancePlayerConfig.max_distance] ignored). Same Phonon InverseDistance TYPE on Pathing/Reflections when distance attenuation is on.
-		</constant>
-		<constant name="ATTENUATION_LINEAR" value="1" enum="AttenuationMode">
-			Linear falloff to silence at max distance on Direct playback; Pathing uses the CALLBACK model on path length; Reflections CALLBACK only with [member ResonancePlayerConfig.use_distance_curve_for_reflections].
-		</constant>
-		<constant name="ATTENUATION_CUSTOM_CURVE" value="2" enum="AttenuationMode">
-			Custom [Curve] rolloff from [member ResonancePlayerConfig.attenuation_curve] (same Pathing/Reflections rules as Linear).
-		</constant>
-		<constant name="ATTENUATION_DISABLED" value="3" enum="AttenuationMode">
-			No distance rolloff on Direct; Phonon default distance model on wet slots.
-		</constant>
-	</constants>
 </class>

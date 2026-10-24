@@ -42,7 +42,7 @@
 			Master distance-attenuation switch. When off, Direct gain stays 1 and Phonon uses the default distance model on all slots; mode/min/max remain stored.
 		</member>
 		<member name="attenuation_mode" type="int" default="0">
-			[code]0[/code] Inverse (1/d with [member min_distance], ignores [member max_distance]), [code]1[/code] Linear, [code]2[/code] Curve, [code]3[/code] Disabled. See [constant ResonancePlayer.ATTENUATION_INVERSE]. Same TYPE feeds Direct (Euclid), Pathing (path length), and Reflections (IR correction); Linear/Curve Reflections CALLBACK only when [member use_distance_curve_for_reflections].
+			[code]0[/code] Inverse (1/d with [member min_distance], ignores [member max_distance]), [code]1[/code] Linear, [code]2[/code] Curve, [code]3[/code] Disabled. Same TYPE feeds Direct (Euclid), Pathing (path length), and Reflections (IR correction); Linear/Curve Reflections CALLBACK only when [member use_distance_curve_for_reflections].
 		</member>
 		<member name="min_distance" type="float" default="1.0">
 			Distance (m) at full volume. Inverse uses this as the 1/d knee; Linear/Curve use it as the near end of the rolloff.

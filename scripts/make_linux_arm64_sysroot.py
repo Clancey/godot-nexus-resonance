@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Build a Debian 11 arm64 sysroot with glibc 2.31; verify each package's SHA-256."""
+"""Build a Debian 11 (glibc 2.31) sysroot for arm64 or amd64; verify each package's SHA-256.
+
+Usage: make_linux_arm64_sysroot.py <out_dir> [arm64|amd64]
+"""
 import gzip
 import hashlib
 import os
@@ -17,9 +20,12 @@ PACKAGES = (
 
 def main():
     out = Path(sys.argv[1]).resolve()
+    arch = sys.argv[2] if len(sys.argv) > 2 else "arm64"
+    if arch not in ("arm64", "amd64"):
+        raise ValueError(f"Unsupported sysroot arch: {arch}")
     cache = out / ".debs"
     cache.mkdir(parents=True, exist_ok=True)
-    with urllib.request.urlopen(MIRROR + "/dists/bullseye/main/binary-arm64/Packages.gz", timeout=120) as response:
+    with urllib.request.urlopen(MIRROR + f"/dists/bullseye/main/binary-{arch}/Packages.gz", timeout=120) as response:
         index = gzip.decompress(response.read()).decode()
     entries = {}
     for stanza in index.split("\n\n"):

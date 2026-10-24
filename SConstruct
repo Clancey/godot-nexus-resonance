@@ -28,6 +28,16 @@ if (
         cross_flags.append("--sysroot=" + os.path.abspath(sysroot))
     env.Append(CCFLAGS=cross_flags, LINKFLAGS=cross_flags)
     Export("env")
+elif (
+    ARGUMENTS.get("platform") == "linux"
+    and ARGUMENTS.get("arch", "x86_64") == "x86_64"
+    and os.environ.get("LINUX_X86_64_SYSROOT")
+):
+    # Release builds link against a Debian 11 sysroot (glibc 2.31) with clang (use_llvm=yes).
+    env = Environment(tools=["default"], PLATFORM="")
+    sysroot_flags = ["--target=x86_64-linux-gnu", "--sysroot=" + os.path.abspath(os.environ["LINUX_X86_64_SYSROOT"])]
+    env.Append(CCFLAGS=sysroot_flags, LINKFLAGS=sysroot_flags + ["-fuse-ld=lld"])
+    Export("env")
 
 env = SConscript("src/lib/godot-cpp/SConstruct")
 
@@ -78,6 +88,8 @@ elif env["platform"] == "macos":
 
 elif env["platform"] == "android":
     env.Replace(SHLIBSUFFIX=".so")
+    # Keep ELF load segments compatible with Android's 16 KiB page-size devices.
+    env.Append(LINKFLAGS=["-Wl,-z,max-page-size=16384", "-Wl,-z,common-page-size=16384"])
     arch_to_steam = {"arm64": "android-armv8", "x86_64": "android-x64", "arm32": "android-armv7", "x86_32": "android-x86"}
     steam_arch = arch_to_steam.get(env["arch"], "android-armv8")
     env.Append(LIBPATH=[os.path.join(steam_audio_lib, steam_arch)])
